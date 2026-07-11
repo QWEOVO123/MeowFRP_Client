@@ -139,5 +139,6 @@ private:
     QString m_statusMessage = "等待连接服务器";
     QString m_errorMessage;
     QString m_logText;
+    int m_logLineCount = 0;
     QList<TunnelDraft> m_tunnels;
 };

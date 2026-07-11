@@ -10,6 +10,11 @@
 
 #include <utility>
 
+namespace {
+constexpr int kMaxLogLines = 10000;
+constexpr qsizetype kMaxLogCharacters = 2 * 1024 * 1024;
+}
+
 AppController::AppController(QObject *parent)
     : QObject(parent)
 {
@@ -360,6 +365,7 @@ void AppController::quitClient()
 void AppController::clearLogs()
 {
     m_logText.clear();
+    m_logLineCount = 0;
     emit logsChanged();
 }
 
@@ -399,6 +405,27 @@ void AppController::appendLog(const QString &line)
         m_logText += "\n";
     }
     m_logText += trimmed;
+    m_logLineCount += trimmed.count('\n') + 1;
+
+    qsizetype removeThrough = 0;
+    int linesToRemove = qMax(0, m_logLineCount - kMaxLogLines);
+    for (int i = 0; i < linesToRemove; ++i) {
+        const qsizetype newline = m_logText.indexOf('\n', removeThrough);
+        if (newline < 0) {
+            removeThrough = m_logText.size();
+            break;
+        }
+        removeThrough = newline + 1;
+    }
+    if (m_logText.size() - removeThrough > kMaxLogCharacters) {
+        const qsizetype minimumCut = m_logText.size() - kMaxLogCharacters;
+        const qsizetype newline = m_logText.indexOf('\n', qMax(removeThrough, minimumCut));
+        removeThrough = newline >= 0 ? newline + 1 : minimumCut;
+    }
+    if (removeThrough > 0) {
+        m_logText.remove(0, removeThrough);
+        m_logLineCount = m_logText.isEmpty() ? 0 : m_logText.count('\n') + 1;
+    }
     emit logsChanged();
 }
 
