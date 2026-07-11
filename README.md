@@ -23,7 +23,7 @@ Companion server project: `MeowFRP_server`
 
 ## How It Works
 
-1. The user enters the MeowFRP Server API URL and their access token.
+1. The user enters the complete MeowFRP Server API base URL and their access token.
 2. The client requests the resource policy from `/api/v1/client/resource-policy`.
 3. The server returns the FRP endpoint, allowed protocols, port range, tunnel limit, and DPI status.
 4. The user creates tunnels within those server-defined limits.
@@ -63,16 +63,10 @@ $env:Path = 'C:\Qt\Tools\mingw1310_64\bin;C:\Qt\6.11.1\mingw_64\bin;' + $env:Pat
 1. Start or deploy `MeowFRP_server`.
 2. Create a regular user in the server's web panel and copy the generated HTTPS API token.
 3. Place `frpc.exe` where the client can locate it, or select its path in the client settings.
-4. Start MeowFRP Client and enter the server API URL and user token.
+4. Start MeowFRP Client and enter the complete server API base URL and user token. The client does not add an `/api` prefix automatically.
 5. After authentication succeeds, add tunnels within the permissions returned by the server and start FRP.
 
-The default public service API used by packaged builds is:
-
-```text
-https://relay.qweovo.top
-```
-
-For local development, a typical API URL is `http://127.0.0.1:8080`.
+The API field is empty on first launch. For local development, a typical API base URL is `http://127.0.0.1:8080/api`. Include any reverse-proxy path such as `/api` yourself.
 
 ## Project Structure
 

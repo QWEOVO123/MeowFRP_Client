@@ -16,7 +16,7 @@ void ControlApiClient::queryResourcePolicy(const QString &apiBaseUrl, const QStr
         {"access_token", accessToken.trimmed()},
         {"client_id", clientId.trimmed()},
     };
-    postJson(endpointUrl(apiBaseUrl, "/api/v1/client/resource-policy"), payload, [this](const QJsonObject &object) {
+    postJson(endpointUrl(apiBaseUrl, "/v1/client/resource-policy"), payload, [this](const QJsonObject &object) {
         const ResourcePolicyResponse response = ResourcePolicyResponse::fromJson(object);
         if (!response.ok) {
             emit requestFailed(response.reason.isEmpty() ? "服务端拒绝了权限查询。" : response.reason);
@@ -38,7 +38,7 @@ void ControlApiClient::bootstrap(const QString &apiBaseUrl, const QString &acces
         {"client_version", QString(APP_VERSION)},
         {"proxies", proxyArray},
     };
-    postJson(endpointUrl(apiBaseUrl, "/api/v1/client/bootstrap"), payload, [this](const QJsonObject &object) {
+    postJson(endpointUrl(apiBaseUrl, "/v1/client/bootstrap"), payload, [this](const QJsonObject &object) {
         const BootstrapResponse response = BootstrapResponse::fromJson(object);
         if (!response.ok) {
             emit requestFailed(response.reason.isEmpty() ? "服务端拒绝了配置下发。" : response.reason);
@@ -56,7 +56,7 @@ void ControlApiClient::heartbeat(const QString &apiBaseUrl, const QString &acces
         {"client_version", QString(APP_VERSION)},
         {"frpc_running", frpcRunning},
     };
-    postJson(endpointUrl(apiBaseUrl, "/api/v1/client/heartbeat"), payload, [this](const QJsonObject &object) {
+    postJson(endpointUrl(apiBaseUrl, "/v1/client/heartbeat"), payload, [this](const QJsonObject &object) {
         const HeartbeatResponse response = HeartbeatResponse::fromJson(object);
         emit heartbeatLoaded(response);
     }, [this](const QString &message) {
@@ -72,7 +72,7 @@ void ControlApiClient::logout(const QString &apiBaseUrl, const QString &accessTo
         {"client_version", QString(APP_VERSION)},
         {"frpc_running", frpcRunning},
     };
-    postJson(endpointUrl(apiBaseUrl, "/api/v1/client/logout"), payload, [this](const QJsonObject &object) {
+    postJson(endpointUrl(apiBaseUrl, "/v1/client/logout"), payload, [this](const QJsonObject &object) {
         const bool ok = object.value("ok").toBool(false);
         if (!ok) {
             emit logoutFailed(object.value("reason").toString(object.value("error").toString("服务端拒绝了下线请求。")));
@@ -106,7 +106,7 @@ void ControlApiClient::postJson(const QUrl &url, const QJsonObject &payload, std
         }
     };
     if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()) {
-        fail("API 地址无效，请填写类似 http://127.0.0.1:8080 的地址。");
+        fail("API 地址无效，请填写完整的 API 基础地址，例如 http://127.0.0.1:8080/api。");
         return;
     }
     QNetworkRequest request(url);

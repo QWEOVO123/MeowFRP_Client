@@ -233,7 +233,7 @@ ApplicationWindow {
                     y: 218
                     width: parent.width - 52
                     text: appController.apiBaseUrl
-                    placeholderText: "https://relay.qweovo.top"
+                    placeholderText: "请输入完整的 API 基础地址"
                     onTextEdited: appController.apiBaseUrl = text
                     onEditingFinished: appController.apiBaseUrl = text
                 }

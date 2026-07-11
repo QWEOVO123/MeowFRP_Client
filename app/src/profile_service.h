@@ -4,7 +4,7 @@
 #include <QString>
 
 struct ClientProfile {
-    QString apiBaseUrl = "https://relay.qweovo.top";
+    QString apiBaseUrl;
     QString accessToken;
     QString clientId;
     QString frpcPath;
