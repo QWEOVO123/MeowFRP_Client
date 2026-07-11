@@ -1,0 +1,14 @@
+build/
+dist/
+runtime/
+.qtcreator/
+frp-control-client.cfg.json
+*.exe
+*.dll
+*.zip
+*.7z
+*.sha256
+*.user
+*.autosave
+.DS_Store
+Thumbs.db
