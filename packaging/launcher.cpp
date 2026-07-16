@@ -55,6 +55,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         }
     }
     SetEnvironmentVariableW(L"PATH", (libPath + L";" + oldPath).c_str());
+    SetDllDirectoryW(libPath.c_str());
 
     std::wstring commandLine = quoteArg(appPath);
 

@@ -41,10 +41,13 @@ ClientProfile ProfileService::load()
     const QString storedClientId = object.value("client_id").toString().trimmed();
     const QString hardwareClientId = ensureClientId();
     profile.clientId = hardwareClientId.trimmed().isEmpty() ? storedClientId : hardwareClientId;
-    profile.frpcPath = object.value("frpc_path").toString(profile.frpcPath);
+    const QString storedFrpcPath = object.value("frpc_path").toString().trimmed();
+    if (!QFileInfo::exists(profile.frpcPath) && !storedFrpcPath.isEmpty()) {
+        profile.frpcPath = storedFrpcPath;
+    }
     profile.runtimeDir = object.value("runtime_dir").toString(profile.runtimeDir);
 
-    if (profile.clientId != storedClientId || loadedPath == legacyProfilePath()) {
+    if (profile.clientId != storedClientId || profile.frpcPath != storedFrpcPath || loadedPath == legacyProfilePath()) {
         save(profile);
     }
     return profile;
@@ -117,7 +120,12 @@ QString ProfileService::ensureClientId() const
 
 QString ProfileService::defaultFrpcPath() const
 {
-    return QDir(QCoreApplication::applicationDirPath()).filePath("frpc.exe");
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QString packagedPath = QDir::cleanPath(appDir.absoluteFilePath("../frpc.exe"));
+    if (QFileInfo::exists(packagedPath)) {
+        return packagedPath;
+    }
+    return appDir.filePath("frpc.exe");
 }
 
 QString ProfileService::legacyProfilePath() const
