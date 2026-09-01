@@ -25,6 +25,12 @@ AppController::AppController(QObject *parent)
         setBusy(false);
         applyPolicy(response);
     });
+    connect(&m_api, &ControlApiClient::nodeDirectoryLoaded, this, [this](const QList<NodeDirectoryEntry> &nodes) {
+        setBusy(false, "请选择 FRP 节点");
+        m_nodes = nodes;
+        emit nodeListChanged();
+        emit nodeSelectionRequested();
+    });
     connect(&m_api, &ControlApiClient::bootstrapLoaded, this, [this](const BootstrapResponse &response) {
         setBusy(false, "服务端已下发配置");
         appendLog("服务端已下发配置，租约：" + response.leaseId);
@@ -39,10 +45,19 @@ AppController::AppController(QObject *parent)
     connect(&m_api, &ControlApiClient::requestFailed, this, [this](const QString &message) {
         setBusy(false);
         setError(message);
+        if (message.contains("中心节点失联") || message.contains("controller_disconnected")) {
+            emit remoteMessageRequested("边缘节点与中心节点失联，暂时无法建立新的连接。");
+        }
     });
     connect(&m_api, &ControlApiClient::heartbeatLoaded, this, &AppController::handleHeartbeatResponse);
     connect(&m_api, &ControlApiClient::heartbeatFailed, this, [this](const QString &message) {
         appendLog("心跳失败：" + message);
+    });
+    connect(&m_api, &ControlApiClient::commandAcknowledged, this, [this](qint64 commandId) {
+        appendLog(QString("已通过 HTTPS API 确认服务端命令：%1").arg(commandId));
+    });
+    connect(&m_api, &ControlApiClient::commandAcknowledgeFailed, this, [this](qint64 commandId, const QString &message) {
+        appendLog(QString("命令 %1 确认失败，将在下次心跳重试：%2").arg(commandId).arg(message));
     });
     connect(&m_api, &ControlApiClient::logoutFinished, this, [this]() {
         appendLog("服务端已确认客户端下线。");
@@ -204,6 +219,22 @@ int AppController::tunnelLimit() const
     return m_policy.policy.maxPorts > 0 ? m_policy.policy.maxPorts : 1;
 }
 
+QVariantList AppController::nodeList() const
+{
+    QVariantList items;
+    for (int i = 0; i < m_nodes.size(); ++i) {
+        QVariantMap item;
+        item["index"] = i;
+        item["node_id"] = m_nodes.at(i).nodeId;
+        item["tag"] = m_nodes.at(i).tag;
+        item["api_url"] = m_nodes.at(i).apiUrl;
+		item["online"] = m_nodes.at(i).online;
+		item["node_type"] = m_nodes.at(i).nodeType;
+        items << item;
+    }
+    return items;
+}
+
 void AppController::saveProfile()
 {
     QString error;
@@ -230,9 +261,30 @@ void AppController::connectToServer()
         return;
     }
     saveProfile();
-    setBusy(true, "正在连接服务器并获取权限");
-    appendLog("正在连接服务器并获取权限...");
-    m_api.queryResourcePolicy(m_profile.apiBaseUrl, m_profile.accessToken, m_profile.clientId);
+    m_nodes.clear();
+    emit nodeListChanged();
+    setBusy(true, "正在从中心节点获取可用节点");
+    appendLog("正在从中心节点获取节点目录...");
+    m_api.queryNodeDirectory(m_profile.apiBaseUrl);
+}
+
+void AppController::selectNode(int index)
+{
+    if (index < 0 || index >= m_nodes.size()) {
+        setError("请选择有效的边缘节点");
+        return;
+    }
+    const auto &node = m_nodes.at(index);
+	if (!node.online) {
+		setError("该节点当前离线，请选择在线节点");
+		return;
+	}
+    m_profile.selectedNodeId = node.nodeId;
+    m_profile.selectedNodeApiUrl = node.apiUrl;
+    saveProfile();
+    setBusy(true, "正在连接边缘节点并获取权限");
+    appendLog(QString("已选择节点 %1（%2），正在直接鉴权...").arg(node.tag, node.apiUrl));
+    m_api.queryResourcePolicy(node.apiUrl, m_profile.accessToken, m_profile.clientId);
 }
 
 void AppController::createTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort)
@@ -494,7 +546,6 @@ QString AppController::remoteEndpoint(const TunnelDraft &tunnel) const
 
 void AppController::requestBootstrapForTunnels(const QList<TunnelDraft> &tunnels, const QString &statusMessage)
 {
-    m_profile = ClientProfile{m_profile.apiBaseUrl, m_profile.accessToken, m_profile.clientId, m_profile.frpcPath, m_profile.runtimeDir};
     saveProfile();
 
     QString error;
@@ -509,7 +560,7 @@ void AppController::requestBootstrapForTunnels(const QList<TunnelDraft> &tunnels
 
     setBusy(true, statusMessage);
     appendLog(QString("正在请求服务端下发 %1 个隧道配置...").arg(tunnels.size()));
-    m_api.bootstrap(m_profile.apiBaseUrl, m_profile.accessToken, m_profile.clientId, tunnels);
+    m_api.bootstrap(m_profile.selectedNodeApiUrl, m_profile.accessToken, m_profile.clientId, tunnels);
 }
 
 void AppController::applyPolicy(const ResourcePolicyResponse &response)
@@ -543,10 +594,10 @@ void AppController::stopHeartbeat()
 
 void AppController::sendHeartbeat()
 {
-    if (!m_connected || m_profile.apiBaseUrl.trimmed().isEmpty() || m_profile.accessToken.trimmed().isEmpty() || m_profile.clientId.trimmed().isEmpty()) {
+    if (!m_connected || m_profile.selectedNodeApiUrl.trimmed().isEmpty() || m_profile.accessToken.trimmed().isEmpty() || m_profile.clientId.trimmed().isEmpty()) {
         return;
     }
-    m_api.heartbeat(m_profile.apiBaseUrl, m_profile.accessToken, m_profile.clientId, m_runtime.isRunning());
+    m_api.heartbeat(m_profile.selectedNodeApiUrl, m_profile.accessToken, m_profile.clientId, m_runtime.isRunning());
 }
 
 void AppController::handleHeartbeatResponse(const HeartbeatResponse &response)
@@ -563,6 +614,11 @@ void AppController::handleHeartbeatResponse(const HeartbeatResponse &response)
 
 void AppController::executeClientCommand(const ClientCommand &command)
 {
+    const QString commandKey = m_profile.selectedNodeApiUrl.trimmed() + ":" + QString::number(command.id);
+    if (command.id > 0 && m_handledCommandKeys.contains(commandKey)) {
+        acknowledgeClientCommand(command);
+        return;
+    }
     const QString name = command.command.trimmed();
     const QString message = command.message.trimmed().isEmpty() ? "服务端检测到违规行为，请规范操作" : command.message.trimmed();
     if (name == "stop_frpc") {
@@ -572,19 +628,33 @@ void AppController::executeClientCommand(const ClientCommand &command)
         setStatus(message);
         emit stateChanged();
         emit tunnelsChanged();
+        if (command.id > 0) m_handledCommandKeys.insert(commandKey);
+        acknowledgeClientCommand(command);
         return;
     }
     if (name == "show_warning") {
         appendLog("收到服务端弹窗提醒：" + message);
         emit remoteMessageRequested(message);
+        if (command.id > 0) m_handledCommandKeys.insert(commandKey);
+        acknowledgeClientCommand(command);
         return;
     }
     if (name == "reauth") {
         appendLog("收到服务端命令：重新鉴权");
+        if (command.id > 0) m_handledCommandKeys.insert(commandKey);
+        acknowledgeClientCommand(command);
         requestLogout(LogoutAction::ReturnToAuth, message);
         return;
     }
     appendLog("收到未知服务端命令：" + name);
+}
+
+void AppController::acknowledgeClientCommand(const ClientCommand &command)
+{
+    if (command.id <= 0) {
+        return;
+    }
+    m_api.acknowledgeCommand(m_profile.selectedNodeApiUrl, m_profile.accessToken, m_profile.clientId, command.id);
 }
 
 void AppController::returnToAuthScreen(const QString &message)
@@ -625,12 +695,12 @@ void AppController::requestLogout(LogoutAction action, const QString &message)
     }
     emit stateChanged();
 
-    if (!m_connected || m_profile.apiBaseUrl.trimmed().isEmpty() || m_profile.accessToken.trimmed().isEmpty() || m_profile.clientId.trimmed().isEmpty()) {
+    if (!m_connected || m_profile.selectedNodeApiUrl.trimmed().isEmpty() || m_profile.accessToken.trimmed().isEmpty() || m_profile.clientId.trimmed().isEmpty()) {
         finishLogout();
         return;
     }
 
-    m_api.logout(m_profile.apiBaseUrl, m_profile.accessToken, m_profile.clientId, wasFrpcRunning);
+    m_api.logout(m_profile.selectedNodeApiUrl, m_profile.accessToken, m_profile.clientId, wasFrpcRunning);
     QTimer::singleShot(3000, this, [this]() {
         if (m_logoutAction == LogoutAction::None) {
             return;

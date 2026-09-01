@@ -8,6 +8,25 @@
 #include <QStringList>
 #include <QtGlobal>
 
+struct NodeDirectoryEntry {
+    QString nodeId;
+    QString tag;
+    QString apiUrl;
+    bool online = true;
+    QString nodeType;
+
+    static NodeDirectoryEntry fromJson(const QJsonObject &object)
+    {
+		NodeDirectoryEntry entry;
+		entry.nodeId = object.value("node_id").toString();
+		entry.tag = object.value("tag").toString();
+		entry.apiUrl = object.value("api_url").toString();
+		entry.online = !object.contains("online") || object.value("online").toBool(true);
+		entry.nodeType = object.value("node_type").toString();
+		return entry;
+    }
+};
+
 struct UserResourcePolicy {
     int userId = 0;
     int portStart = 0;
@@ -169,3 +188,4 @@ struct HeartbeatResponse {
 Q_DECLARE_METATYPE(ResourcePolicyResponse)
 Q_DECLARE_METATYPE(BootstrapResponse)
 Q_DECLARE_METATYPE(HeartbeatResponse)
+Q_DECLARE_METATYPE(QList<NodeDirectoryEntry>)

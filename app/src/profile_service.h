@@ -9,6 +9,8 @@ struct ClientProfile {
     QString clientId;
     QString frpcPath;
     QString runtimeDir;
+    QString selectedNodeId;
+    QString selectedNodeApiUrl;
 };
 
 class ProfileService : public QObject {

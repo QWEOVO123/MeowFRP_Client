@@ -5,6 +5,7 @@
 #include "tunnel_runtime_service.h"
 
 #include <QObject>
+#include <QSet>
 #include <QTimer>
 #include <QVariantList>
 
@@ -38,6 +39,7 @@ class AppController : public QObject {
     Q_PROPERTY(QVariantList tunnelList READ tunnelList NOTIFY tunnelsChanged)
     Q_PROPERTY(int tunnelCount READ tunnelCount NOTIFY tunnelsChanged)
     Q_PROPERTY(int tunnelLimit READ tunnelLimit NOTIFY policyChanged)
+    Q_PROPERTY(QVariantList nodeList READ nodeList NOTIFY nodeListChanged)
 
 public:
     explicit AppController(QObject *parent = nullptr);
@@ -76,9 +78,11 @@ public:
     QVariantList tunnelList() const;
     int tunnelCount() const;
     int tunnelLimit() const;
+    QVariantList nodeList() const;
 
     Q_INVOKABLE void saveProfile();
     Q_INVOKABLE void connectToServer();
+    Q_INVOKABLE void selectNode(int index);
     Q_INVOKABLE void createTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort);
     Q_INVOKABLE void addTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort);
     Q_INVOKABLE void removeTunnel(int index);
@@ -97,6 +101,8 @@ signals:
     void logsChanged();
     void tunnelsChanged();
     void remoteMessageRequested(const QString &message);
+    void nodeListChanged();
+    void nodeSelectionRequested();
 
 private:
     enum class LogoutAction {
@@ -119,6 +125,7 @@ private:
     void sendHeartbeat();
     void handleHeartbeatResponse(const HeartbeatResponse &response);
     void executeClientCommand(const ClientCommand &command);
+    void acknowledgeClientCommand(const ClientCommand &command);
     void returnToAuthScreen(const QString &message);
     void requestLogout(LogoutAction action, const QString &message);
     void finishLogout();
@@ -141,4 +148,6 @@ private:
     QString m_logText;
     int m_logLineCount = 0;
     QList<TunnelDraft> m_tunnels;
+    QList<NodeDirectoryEntry> m_nodes;
+    QSet<QString> m_handledCommandKeys;
 };

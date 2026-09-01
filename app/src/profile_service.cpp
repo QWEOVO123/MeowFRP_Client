@@ -46,6 +46,8 @@ ClientProfile ProfileService::load()
         profile.frpcPath = storedFrpcPath;
     }
     profile.runtimeDir = object.value("runtime_dir").toString(profile.runtimeDir);
+    profile.selectedNodeId = object.value("selected_node_id").toString();
+    profile.selectedNodeApiUrl = object.value("selected_node_api_url").toString();
 
     if (profile.clientId != storedClientId || profile.frpcPath != storedFrpcPath || loadedPath == legacyProfilePath()) {
         save(profile);
@@ -77,6 +79,8 @@ bool ProfileService::save(const ClientProfile &profile, QString *errorMessage)
         {"client_id", profile.clientId},
         {"frpc_path", profile.frpcPath},
         {"runtime_dir", profile.runtimeDir},
+        {"selected_node_id", profile.selectedNodeId},
+        {"selected_node_api_url", profile.selectedNodeApiUrl},
     };
     file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
     return true;

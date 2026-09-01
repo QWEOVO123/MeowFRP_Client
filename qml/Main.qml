@@ -47,6 +47,9 @@ ApplicationWindow {
             root.remoteWarningMessage = message
             remoteWarningDialog.open()
         }
+        function onNodeSelectionRequested() {
+            nodeSelectionDialog.open()
+        }
     }
 
     component AppButton: Button {
@@ -174,12 +177,69 @@ ApplicationWindow {
         standardButtons: Dialog.Ok
         anchors.centerIn: parent
         width: Math.min(root.width - 64, 420)
+        palette.window: root.panel
+        palette.windowText: root.ink
+        palette.base: root.panel
+        palette.text: root.ink
+        palette.button: "#ffffff"
+        palette.buttonText: root.ink
+        background: Rectangle {
+            radius: 12
+            color: root.panel
+            border.width: 1
+            border.color: root.line
+        }
         contentItem: Text {
             text: root.remoteWarningMessage
             color: root.ink
             font.pixelSize: 15
             wrapMode: Text.WordWrap
             width: remoteWarningDialog.width - 48
+        }
+    }
+
+    Dialog {
+        id: nodeSelectionDialog
+        title: "选择 FRP 节点"
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(root.width - 48, 520)
+        height: Math.min(root.height - 64, 460)
+        palette.window: root.panel
+        palette.windowText: root.ink
+        background: Rectangle { radius: 12; color: root.panel; border.width: 1; border.color: root.line }
+        contentItem: Column {
+            spacing: 12
+            Text {
+                width: parent.width
+                text: "目录由中心节点下发。选定后，长期 Token 将直接发送给该边缘节点。"
+                color: root.muted
+                wrapMode: Text.WordWrap
+            }
+            ScrollView {
+                width: parent.width
+                height: nodeSelectionDialog.height - 130
+                clip: true
+                Column {
+                    width: parent.width
+                    spacing: 8
+                    Repeater {
+                        model: appController.nodeList
+                        delegate: AppButton {
+                            required property var modelData
+                            width: parent.width
+                            height: 56
+							enabled: modelData.online
+							text: (modelData.tag || "未命名节点") + (modelData.node_type === "controller" ? "  ·  中心" : "  ·  Edge") + (modelData.online ? "  ·  在线" : "  ·  离线") + "\n" + modelData.api_url
+                            onClicked: {
+                                appController.selectNode(modelData.index)
+                                nodeSelectionDialog.close()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -226,14 +286,14 @@ ApplicationWindow {
                     placeholderText: "自动从设备标识生成"
                 }
 
-                Text { x: 26; y: 196; text: "API 地址"; color: root.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                Text { x: 26; y: 196; text: "中心节点 API 地址"; color: root.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
                 AppField {
                     id: apiInput
                     x: 26
                     y: 218
                     width: parent.width - 52
                     text: appController.apiBaseUrl
-                    placeholderText: "请输入完整的 API 基础地址"
+                    placeholderText: "例如 https://controller.example.com/api"
                     onTextEdited: appController.apiBaseUrl = text
                     onEditingFinished: appController.apiBaseUrl = text
                 }
@@ -275,7 +335,7 @@ ApplicationWindow {
                     x: 26
                     y: 438
                     width: parent.width - 158
-                    text: appController.busy ? "连接中..." : "连接服务器"
+                    text: appController.busy ? "获取中..." : "获取节点并连接"
                     emphasized: true
                     enabled: !appController.busy
                     onClicked: {
