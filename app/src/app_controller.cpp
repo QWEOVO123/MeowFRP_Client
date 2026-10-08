@@ -1,8 +1,13 @@
 #include "app_controller.h"
+#include "log_safety.h"
 
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QDateTime>
+#include <QDir>
+#include <QStandardPaths>
+#include <QSysInfo>
 #include <QGuiApplication>
 #include <QSet>
 #include <QTimer>
@@ -19,6 +24,13 @@ AppController::AppController(QObject *parent)
     : QObject(parent)
 {
     m_profile = m_profiles.load();
+    m_profile.accessToken.clear();
+    connect(&m_api, &ControlApiClient::diagnostic, this, &AppController::debugLog);
+    connect(&m_runtime, &TunnelRuntimeService::diagnostic, this, &AppController::debugLog);
+    connect(&m_api, &ControlApiClient::accountAuthenticated, this, [this](const QString &token) {
+        m_profile.accessToken = token;
+        emit profileChanged();
+    });
     m_heartbeatTimer.setInterval(10000);
     connect(&m_heartbeatTimer, &QTimer::timeout, this, &AppController::sendHeartbeat);
     connect(&m_api, &ControlApiClient::resourcePolicyLoaded, this, [this](const ResourcePolicyResponse &response) {
@@ -28,6 +40,7 @@ AppController::AppController(QObject *parent)
     connect(&m_api, &ControlApiClient::nodeDirectoryLoaded, this, [this](const QList<NodeDirectoryEntry> &nodes) {
         setBusy(false, "请选择 FRP 节点");
         m_nodes = nodes;
+        debugLog(QString("[AUTH] directory nodes=%1").arg(nodes.size()));
         emit nodeListChanged();
         emit nodeSelectionRequested();
     });
@@ -52,6 +65,7 @@ AppController::AppController(QObject *parent)
     connect(&m_api, &ControlApiClient::heartbeatLoaded, this, &AppController::handleHeartbeatResponse);
     connect(&m_api, &ControlApiClient::heartbeatFailed, this, [this](const QString &message) {
         appendLog("心跳失败：" + message);
+        debugLog("[HEARTBEAT] transport/API failure; keeping login and frpc running");
     });
     connect(&m_api, &ControlApiClient::commandAcknowledged, this, [this](qint64 commandId) {
         appendLog(QString("已通过 HTTPS API 确认服务端命令：%1").arg(commandId));
@@ -68,15 +82,22 @@ AppController::AppController(QObject *parent)
         finishLogout();
     });
     connect(&m_runtime, &TunnelRuntimeService::logLine, this, &AppController::appendLog);
+    connect(&m_runtime, &TunnelRuntimeService::leaseEnded, &m_api, &ControlApiClient::releaseLease);
+    connect(&m_api, &ControlApiClient::leaseReleaseFailed, this, [this](const QString &message) {
+        appendLog("旧租约释放请求失败（下次启动会替换同一客户端旧租约）：" + message);
+    });
     connect(&m_runtime, &TunnelRuntimeService::failed, this, [this](const QString &message) {
         m_frpcRunning = m_runtime.isRunning();
         setError(message);
+        emit tunnelsChanged();
     });
     connect(&m_runtime, &TunnelRuntimeService::statusChanged, this, [this](const QString &message) {
         m_frpcRunning = m_runtime.isRunning();
         setStatus(message);
         appendLog(message);
+        emit tunnelsChanged();
     });
+    setDebugMode(m_profile.debugMode);
 }
 
 QString AppController::apiBaseUrl() const { return m_profile.apiBaseUrl; }
@@ -92,6 +113,67 @@ bool AppController::allowClose() const { return m_allowClose; }
 QString AppController::statusMessage() const { return m_statusMessage; }
 QString AppController::errorMessage() const { return m_errorMessage; }
 QString AppController::logText() const { return m_logText; }
+bool AppController::debugMode() const { return m_debugMode; }
+QString AppController::debugLogPath() const { return m_debugLogPath; }
+
+void AppController::openDebugLog()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (base.isEmpty()) base = m_profile.runtimeDir;
+    const QString directory = QDir(base).filePath("logs");
+    if (!QDir().mkpath(directory)) {
+        appendLog("调试日志目录创建失败；详细日志仍会显示在界面。");
+        return;
+    }
+    m_debugLogPath = QDir(directory).filePath(QString("debug-%1-%2-%3.log")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz"))
+        .arg(QCoreApplication::applicationPid()).arg(m_logoutGeneration));
+    m_debugLogFile.setFileName(m_debugLogPath);
+    if (!m_debugLogFile.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        m_debugLogPath.clear();
+        appendLog("调试日志文件打开失败；详细日志仍会显示在界面。");
+        return;
+    }
+    m_debugLogFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+}
+
+void AppController::setDebugMode(bool enabled)
+{
+    if (m_debugMode == enabled) return;
+    if (!enabled) appendLog("调试模式已关闭。");
+    m_debugMode = enabled;
+    m_profile.debugMode = enabled;
+    m_api.setDebugMode(enabled);
+    m_runtime.setDebugMode(enabled);
+    if (enabled) {
+        openDebugLog();
+        appendLog("调试模式已开启：敏感凭据脱敏；详细日志保存在 " + m_debugLogPath);
+        debugLog(QString("[ENV] app=%1 Qt=%2 OS=%3 arch=%4 pid=%5 heartbeat_ms=%6")
+            .arg(QString(APP_VERSION), QString(qVersion()), QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture())
+            .arg(QCoreApplication::applicationPid()).arg(m_heartbeatTimer.interval()));
+        debugLog("[ENV] frpc=" + m_profile.frpcPath + " runtime=" + m_profile.runtimeDir);
+    } else {
+        m_debugLogFile.close();
+    }
+    // Only save the debug preference here; do not write an unsaved API edit.
+    auto stored = m_profiles.load();
+    stored.debugMode = enabled;
+    QString error;
+    if (!m_profiles.save(stored, &error)) appendLog("调试模式偏好保存失败：" + error);
+    emit debugModeChanged();
+}
+
+void AppController::debugLog(const QString &line)
+{
+    if (m_debugMode) appendLog("[DEBUG] " + line);
+}
+
+void AppController::traceAction(const QString &source)
+{
+    debugLog(QString("[ACTION] source=%1 connected=%2 busy=%3 runtime_running=%4 tunnels=%5 logout_action=%6")
+        .arg(source).arg(m_connected).arg(m_busy).arg(m_runtime.isRunning()).arg(m_tunnels.size())
+        .arg(static_cast<int>(m_logoutAction)));
+}
 QString AppController::userName() const { return m_policy.user; }
 QString AppController::tokenName() const { return m_policy.tokenName; }
 int AppController::portStart() const { return m_policy.policy.portStart; }
@@ -245,31 +327,40 @@ void AppController::saveProfile()
     setStatus("配置已保存");
 }
 
-void AppController::connectToServer()
+void AppController::connectToServer(const QString &accessToken)
 {
-    if (m_logoutAction != LogoutAction::None) {
-        return;
-    }
+    LogSafety::rememberSecret(accessToken.trimmed());
+    traceAction("ui.login_or_reauthenticate");
+	if (m_busy) return;
+	if (m_logoutAction != LogoutAction::None) {
+		return;
+	}
+	if (m_connected) {
+		requestLogout(LogoutAction::ReturnToAuth, "已断开当前节点，请重新连接并选择节点");
+		return;
+	}
     m_allowClose = false;
     const QString hardwareClientId = m_profiles.ensureClientId();
     if (m_profile.clientId != hardwareClientId) {
         m_profile.clientId = hardwareClientId;
         emit profileChanged();
     }
-    if (m_profile.apiBaseUrl.trimmed().isEmpty() || m_profile.accessToken.trimmed().isEmpty()) {
-        setError("请填写 API 地址和用户 Token");
+    if (m_profile.apiBaseUrl.trimmed().isEmpty() || accessToken.trimmed().isEmpty()) {
+        setError("请填写中心 API 地址和系统生成的用户 Token");
         return;
     }
     saveProfile();
     m_nodes.clear();
+    m_profile.accessToken.clear();
     emit nodeListChanged();
-    setBusy(true, "正在从中心节点获取可用节点");
-    appendLog("正在从中心节点获取节点目录...");
-    m_api.queryNodeDirectory(m_profile.apiBaseUrl);
+    setBusy(true, "正在向中心验证 Token 并获取授权节点");
+    m_api.queryNodeDirectory(m_profile.apiBaseUrl, accessToken, m_profile.clientId);
 }
 
 void AppController::selectNode(int index)
 {
+    traceAction(QString("ui.select_node index=%1").arg(index));
+    if (m_busy || m_profile.accessToken.isEmpty()) return;
     if (index < 0 || index >= m_nodes.size()) {
         setError("请选择有效的边缘节点");
         return;
@@ -289,6 +380,8 @@ void AppController::selectNode(int index)
 
 void AppController::createTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort)
 {
+    traceAction("ui.create_tunnel");
+    if (m_busy || m_logoutAction != LogoutAction::None) return;
     TunnelDraft draft;
     draft.name = name.trimmed();
     draft.type = type.trimmed();
@@ -303,6 +396,10 @@ void AppController::createTunnel(const QString &name, const QString &type, const
 
 void AppController::addTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort)
 {
+    traceAction("ui.add_tunnel");
+    debugLog(QString("[TUNNEL] name=%1 type=%2 local=%3:%4 remote_port=%5")
+        .arg(name, type, localIp).arg(localPort).arg(remotePort));
+    if (m_busy || m_logoutAction != LogoutAction::None) return;
     TunnelDraft draft;
     draft.name = name.trimmed();
     draft.type = type.trimmed();
@@ -339,6 +436,8 @@ void AppController::addTunnel(const QString &name, const QString &type, const QS
 
 void AppController::removeTunnel(int index)
 {
+    traceAction(QString("ui.remove_tunnel index=%1").arg(index));
+    if (m_busy || m_logoutAction != LogoutAction::None) return;
     if (index < 0 || index >= m_tunnels.size()) {
         setError("隧道索引无效");
         return;
@@ -350,11 +449,14 @@ void AppController::removeTunnel(int index)
 
 void AppController::startTunnels()
 {
+    traceAction("ui.start_or_restart_tunnels");
     requestBootstrapForTunnels(m_tunnels, "正在启动隧道列表");
 }
 
 void AppController::stopTunnel(int index)
 {
+    traceAction(QString("ui.stop_single_tunnel index=%1").arg(index));
+    if (m_busy || m_logoutAction != LogoutAction::None) return;
     if (index < 0 || index >= m_tunnels.size()) {
         setError("隧道索引无效");
         return;
@@ -364,7 +466,7 @@ void AppController::stopTunnel(int index)
     emit tunnelsChanged();
 
     if (m_runtime.isRunning()) {
-        m_runtime.stop();
+        m_runtime.stop("ui.stop_single_tunnel:" + removed.name);
         m_frpcRunning = false;
         emit stateChanged();
         emit tunnelsChanged();
@@ -378,7 +480,11 @@ void AppController::stopTunnel(int index)
 
 void AppController::stopAllTunnels()
 {
-    m_runtime.stop();
+    traceAction("ui.stop_all_tunnels");
+    if (m_logoutAction != LogoutAction::None) return;
+    m_api.invalidateSession();
+    setBusy(false);
+    m_runtime.stop("ui.stop_all_tunnels");
     m_frpcRunning = false;
     emit stateChanged();
     emit tunnelsChanged();
@@ -386,6 +492,7 @@ void AppController::stopAllTunnels()
 
 void AppController::copyRemoteEndpoint(int index)
 {
+    traceAction(QString("ui.copy_remote_endpoint index=%1").arg(index));
     if (index < 0 || index >= m_tunnels.size()) {
         setError("隧道索引无效");
         return;
@@ -402,11 +509,13 @@ void AppController::copyRemoteEndpoint(int index)
 
 void AppController::stopFrpc()
 {
+    traceAction("ui.legacy_stop_frpc");
     stopAllTunnels();
 }
 
 void AppController::quitClient()
 {
+    traceAction("ui.quit_or_window_close");
     if (m_allowClose || !m_connected) {
         QCoreApplication::quit();
         return;
@@ -416,9 +525,21 @@ void AppController::quitClient()
 
 void AppController::clearLogs()
 {
+    debugLog("[ACTION] ui.clear_visible_logs; file log preserved");
     m_logText.clear();
     m_logLineCount = 0;
     emit logsChanged();
+}
+
+void AppController::copyLogs()
+{
+    QGuiApplication::clipboard()->setText(m_logText);
+    setStatus("已复制当前日志（敏感凭据已脱敏）");
+}
+
+void AppController::recordUiWarning(const QString &message)
+{
+    debugLog("[QML] " + message);
 }
 
 void AppController::setBusy(bool value, const QString &message)
@@ -449,14 +570,38 @@ void AppController::setStatus(const QString &message)
 
 void AppController::appendLog(const QString &line)
 {
-    const QString trimmed = line.trimmed();
+    const QString trimmed = LogSafety::redact(line.trimmed());
     if (trimmed.isEmpty()) {
         return;
     }
     if (!m_logText.isEmpty()) {
         m_logText += "\n";
     }
-    m_logText += trimmed;
+    const QString record = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz t") + " " + trimmed;
+    m_logText += record;
+    if (m_debugMode && m_debugLogFile.isOpen()) {
+        // Bound each session to a current 10 MiB file and one previous segment.
+        if (m_debugLogFile.size() >= 10 * 1024 * 1024) {
+            m_debugLogFile.close();
+            const QString previous = m_debugLogPath + ".previous";
+            // These are our own diagnostic files, never configuration/runtime files.
+            const bool rotated = (!QFile::exists(previous) || QFile::remove(previous))
+                && QFile::rename(m_debugLogPath, previous);
+            if (rotated && m_debugLogFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                m_debugLogFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        }
+        if (m_debugLogFile.isOpen()) {
+            const QByteArray data = record.toUtf8() + '\n';
+            if (m_debugLogFile.write(data) != data.size() || !m_debugLogFile.flush()) {
+                m_debugLogFile.close();
+                m_logText += "\n调试日志写盘失败，后续日志仅显示在界面。";
+                ++m_logLineCount;
+            }
+        } else {
+            m_logText += "\n调试日志轮转失败，后续日志仅显示在界面。";
+            ++m_logLineCount;
+        }
+    }
     m_logLineCount += trimmed.count('\n') + 1;
 
     qsizetype removeThrough = 0;
@@ -491,6 +636,7 @@ bool AppController::validateTunnel(const TunnelDraft &draft, QString *errorMessa
         *errorMessage = "请填写隧道名称和本地地址";
         return false;
     }
+    if (draft.name.toUtf8().size()>48) { *errorMessage="隧道名称最多 48 个 UTF-8 字节"; return false; }
     if (!m_policy.policy.allowedProtocols.contains(draft.type)) {
         *errorMessage = "服务端未授权该穿透协议";
         return false;
@@ -546,6 +692,7 @@ QString AppController::remoteEndpoint(const TunnelDraft &tunnel) const
 
 void AppController::requestBootstrapForTunnels(const QList<TunnelDraft> &tunnels, const QString &statusMessage)
 {
+    if (m_busy || m_logoutAction != LogoutAction::None) return;
     saveProfile();
 
     QString error;
@@ -565,6 +712,9 @@ void AppController::requestBootstrapForTunnels(const QList<TunnelDraft> &tunnels
 
 void AppController::applyPolicy(const ResourcePolicyResponse &response)
 {
+    debugLog(QString("[AUTH] policy accepted ports=%1-%2 max_ports=%3 protocols=%4 DPI=%5 mode=%6")
+        .arg(response.policy.portStart).arg(response.policy.portEnd).arg(response.policy.maxPorts)
+        .arg(response.policy.allowedProtocols.join(',')).arg(response.dpi.enabled).arg(response.dpi.mode));
     m_policy = response;
     m_connected = true;
     m_allowClose = false;
@@ -579,6 +729,7 @@ void AppController::applyPolicy(const ResourcePolicyResponse &response)
 
 void AppController::startHeartbeat()
 {
+    debugLog(QString("[HEARTBEAT] start interval_ms=%1 immediate=true").arg(m_heartbeatTimer.interval()));
     if (!m_heartbeatTimer.isActive()) {
         m_heartbeatTimer.start();
     }
@@ -587,6 +738,7 @@ void AppController::startHeartbeat()
 
 void AppController::stopHeartbeat()
 {
+    debugLog(QString("[HEARTBEAT] stop timer active=%1").arg(m_heartbeatTimer.isActive()));
     if (m_heartbeatTimer.isActive()) {
         m_heartbeatTimer.stop();
     }
@@ -594,6 +746,7 @@ void AppController::stopHeartbeat()
 
 void AppController::sendHeartbeat()
 {
+    debugLog(QString("[HEARTBEAT] timer tick connected=%1 runtime_running=%2").arg(m_connected).arg(m_runtime.isRunning()));
     if (!m_connected || m_profile.selectedNodeApiUrl.trimmed().isEmpty() || m_profile.accessToken.trimmed().isEmpty() || m_profile.clientId.trimmed().isEmpty()) {
         return;
     }
@@ -602,6 +755,9 @@ void AppController::sendHeartbeat()
 
 void AppController::handleHeartbeatResponse(const HeartbeatResponse &response)
 {
+    debugLog(QString("[HEARTBEAT] response ok=%1 commands=%2 reason=%3")
+        .arg(response.ok).arg(response.commands.size()).arg(response.reason));
+    if (!m_connected || m_logoutAction != LogoutAction::None) return;
     if (!response.ok) {
         const QString reason = response.reason.isEmpty() ? "服务端拒绝了客户端心跳，请重新鉴权" : response.reason;
         requestLogout(LogoutAction::ReturnToAuth, reason);
@@ -614,8 +770,10 @@ void AppController::handleHeartbeatResponse(const HeartbeatResponse &response)
 
 void AppController::executeClientCommand(const ClientCommand &command)
 {
+    debugLog(QString("[COMMAND] id=%1 type=%2 message=%3").arg(command.id).arg(command.command, command.message));
     const QString commandKey = m_profile.selectedNodeApiUrl.trimmed() + ":" + QString::number(command.id);
     if (command.id > 0 && m_handledCommandKeys.contains(commandKey)) {
+        debugLog("[COMMAND] already handled; ACK only, no repeated stop");
         acknowledgeClientCommand(command);
         return;
     }
@@ -623,7 +781,7 @@ void AppController::executeClientCommand(const ClientCommand &command)
     const QString message = command.message.trimmed().isEmpty() ? "服务端检测到违规行为，请规范操作" : command.message.trimmed();
     if (name == "stop_frpc") {
         appendLog("收到服务端命令：关闭 frpc");
-        m_runtime.stop();
+        m_runtime.stop(QString("server.command.stop_frpc id=%1").arg(command.id));
         m_frpcRunning = false;
         setStatus(message);
         emit stateChanged();
@@ -659,8 +817,13 @@ void AppController::acknowledgeClientCommand(const ClientCommand &command)
 
 void AppController::returnToAuthScreen(const QString &message)
 {
+    debugLog("[AUTH] return_to_login reason=" + message);
+    m_api.invalidateSession();
+    m_profile.accessToken.clear();
+    m_nodes.clear();
+    emit nodeListChanged();
     stopHeartbeat();
-    m_runtime.stop();
+    m_runtime.stop("auth.return_to_login:" + message);
     m_frpcRunning = false;
     m_connected = false;
     m_busy = false;
@@ -676,10 +839,14 @@ void AppController::returnToAuthScreen(const QString &message)
 
 void AppController::requestLogout(LogoutAction action, const QString &message)
 {
+    debugLog(QString("[LOGOUT] request action=%1 existing_action=%2 reason=%3")
+        .arg(static_cast<int>(action)).arg(static_cast<int>(m_logoutAction)).arg(message));
     if (m_logoutAction != LogoutAction::None) {
         return;
     }
     m_logoutAction = action;
+    m_api.invalidateSession();
+    const auto logoutGeneration = ++m_logoutGeneration;
     m_logoutMessage = message.trimmed();
     m_quitInProgress = action == LogoutAction::QuitApplication;
     m_allowClose = false;
@@ -689,7 +856,7 @@ void AppController::requestLogout(LogoutAction action, const QString &message)
     stopHeartbeat();
     const bool wasFrpcRunning = m_runtime.isRunning();
     if (wasFrpcRunning) {
-        m_runtime.stop();
+        m_runtime.stop("auth.logout:" + message);
         m_frpcRunning = false;
         emit tunnelsChanged();
     }
@@ -701,8 +868,8 @@ void AppController::requestLogout(LogoutAction action, const QString &message)
     }
 
     m_api.logout(m_profile.selectedNodeApiUrl, m_profile.accessToken, m_profile.clientId, wasFrpcRunning);
-    QTimer::singleShot(3000, this, [this]() {
-        if (m_logoutAction == LogoutAction::None) {
+    QTimer::singleShot(3000, this, [this, logoutGeneration]() {
+        if (m_logoutAction == LogoutAction::None || logoutGeneration != m_logoutGeneration) {
             return;
         }
         appendLog("下线请求等待超时，继续清理本地状态。");
@@ -712,6 +879,7 @@ void AppController::requestLogout(LogoutAction action, const QString &message)
 
 void AppController::finishLogout()
 {
+    debugLog(QString("[LOGOUT] finish action=%1").arg(static_cast<int>(m_logoutAction)));
     if (m_logoutAction == LogoutAction::None) {
         return;
     }

@@ -5,6 +5,7 @@
 #include "tunnel_runtime_service.h"
 
 #include <QObject>
+#include <QFile>
 #include <QSet>
 #include <QTimer>
 #include <QVariantList>
@@ -24,6 +25,8 @@ class AppController : public QObject {
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY stateChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY stateChanged)
     Q_PROPERTY(QString logText READ logText NOTIFY logsChanged)
+    Q_PROPERTY(bool debugMode READ debugMode WRITE setDebugMode NOTIFY debugModeChanged)
+    Q_PROPERTY(QString debugLogPath READ debugLogPath NOTIFY debugModeChanged)
     Q_PROPERTY(QString userName READ userName NOTIFY policyChanged)
     Q_PROPERTY(QString tokenName READ tokenName NOTIFY policyChanged)
     Q_PROPERTY(QString frpEndpoint READ frpEndpoint NOTIFY policyChanged)
@@ -63,6 +66,9 @@ public:
     QString statusMessage() const;
     QString errorMessage() const;
     QString logText() const;
+    bool debugMode() const;
+    void setDebugMode(bool enabled);
+    QString debugLogPath() const;
     QString userName() const;
     QString tokenName() const;
     QString frpEndpoint() const;
@@ -81,7 +87,7 @@ public:
     QVariantList nodeList() const;
 
     Q_INVOKABLE void saveProfile();
-    Q_INVOKABLE void connectToServer();
+    Q_INVOKABLE void connectToServer(const QString &accessToken = {});
     Q_INVOKABLE void selectNode(int index);
     Q_INVOKABLE void createTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort);
     Q_INVOKABLE void addTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort);
@@ -93,9 +99,12 @@ public:
     Q_INVOKABLE void stopFrpc();
     Q_INVOKABLE void quitClient();
     Q_INVOKABLE void clearLogs();
+    Q_INVOKABLE void copyLogs();
+    void recordUiWarning(const QString &message);
 
 signals:
     void profileChanged();
+    void debugModeChanged();
     void stateChanged();
     void policyChanged();
     void logsChanged();
@@ -115,6 +124,9 @@ private:
     void setError(const QString &message);
     void setStatus(const QString &message);
     void appendLog(const QString &line);
+    void debugLog(const QString &line);
+    void traceAction(const QString &source);
+    void openDebugLog();
     bool validateTunnel(const TunnelDraft &draft, QString *errorMessage) const;
     bool validateTunnelList(const QList<TunnelDraft> &tunnels, QString *errorMessage) const;
     QString remoteEndpoint(const TunnelDraft &tunnel) const;
@@ -150,4 +162,8 @@ private:
     QList<TunnelDraft> m_tunnels;
     QList<NodeDirectoryEntry> m_nodes;
     QSet<QString> m_handledCommandKeys;
+    quint64 m_logoutGeneration = 0;
+    bool m_debugMode = false;
+    QFile m_debugLogFile;
+    QString m_debugLogPath;
 };

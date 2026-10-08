@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network)
 
 if(WIN32 AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(FRP_CLIENT_APP_TYPE WIN32)
@@ -20,7 +20,11 @@ endif()
 
 add_executable(frp-control-client ${FRP_CLIENT_APP_TYPE}
     app/src/main.cpp
+    app/src/appearance_controller.h
+    app/src/appearance_controller.cpp
+    app/src/ui_preview_controller.h
     app/src/models.h
+    app/src/log_safety.h
     app/src/profile_service.h
     app/src/profile_service.cpp
     app/src/control_api_client.h
@@ -32,6 +36,10 @@ add_executable(frp-control-client ${FRP_CLIENT_APP_TYPE}
     app/assets/app_assets.qrc
     ${FRP_CLIENT_WIN_RESOURCES}
 )
+
+if(WIN32)
+    target_link_libraries(frp-control-client PRIVATE dwmapi user32)
+endif()
 
 target_link_libraries(frp-control-client PRIVATE
     Qt6::Core
@@ -59,4 +67,23 @@ endif()
 
 if(MINGW)
     target_link_options(frp-control-client PRIVATE -static-libgcc -static-libstdc++)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Qt6 QUIET COMPONENTS Test)
+    if(TARGET Qt6::Test)
+        add_executable(client-ui-tests tests/ui_test.cpp app/src/appearance_controller.cpp app/src/appearance_controller.h app/src/ui_preview_controller.h app/assets/app_assets.qrc)
+        target_include_directories(client-ui-tests PRIVATE app/src)
+        target_compile_definitions(client-ui-tests PRIVATE CLIENT_UI_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml")
+        target_link_libraries(client-ui-tests PRIVATE Qt6::Test Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+        if(WIN32)
+            target_link_libraries(client-ui-tests PRIVATE dwmapi user32)
+        endif()
+        if(MSVC)
+            target_compile_options(client-ui-tests PRIVATE /utf-8)
+        endif()
+        add_test(NAME client-ui COMMAND client-ui-tests)
+        set_tests_properties(client-ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+    endif()
 endif()

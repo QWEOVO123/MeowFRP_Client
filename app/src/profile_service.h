@@ -11,6 +11,7 @@ struct ClientProfile {
     QString runtimeDir;
     QString selectedNodeId;
     QString selectedNodeApiUrl;
+    bool debugMode = false;
 };
 
 class ProfileService : public QObject {

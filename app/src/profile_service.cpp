@@ -37,7 +37,6 @@ ClientProfile ProfileService::load()
     const auto document = QJsonDocument::fromJson(file.readAll());
     const auto object = document.object();
     profile.apiBaseUrl = object.value("api_base_url").toString(profile.apiBaseUrl);
-    profile.accessToken = object.value("access_token").toString();
     const QString storedClientId = object.value("client_id").toString().trimmed();
     const QString hardwareClientId = ensureClientId();
     profile.clientId = hardwareClientId.trimmed().isEmpty() ? storedClientId : hardwareClientId;
@@ -48,6 +47,7 @@ ClientProfile ProfileService::load()
     profile.runtimeDir = object.value("runtime_dir").toString(profile.runtimeDir);
     profile.selectedNodeId = object.value("selected_node_id").toString();
     profile.selectedNodeApiUrl = object.value("selected_node_api_url").toString();
+    profile.debugMode = object.value("debug_mode").toBool(false);
 
     if (profile.clientId != storedClientId || profile.frpcPath != storedFrpcPath || loadedPath == legacyProfilePath()) {
         save(profile);
@@ -75,12 +75,12 @@ bool ProfileService::save(const ClientProfile &profile, QString *errorMessage)
 
     QJsonObject object{
         {"api_base_url", profile.apiBaseUrl},
-        {"access_token", profile.accessToken},
         {"client_id", profile.clientId},
         {"frpc_path", profile.frpcPath},
         {"runtime_dir", profile.runtimeDir},
         {"selected_node_id", profile.selectedNodeId},
         {"selected_node_api_url", profile.selectedNodeApiUrl},
+        {"debug_mode", profile.debugMode},
     };
     file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
     return true;
@@ -125,11 +125,13 @@ QString ProfileService::ensureClientId() const
 QString ProfileService::defaultFrpcPath() const
 {
     const QDir appDir(QCoreApplication::applicationDirPath());
+    const QString adjacentPath = appDir.filePath("frpc.exe");
+    if (QFileInfo::exists(adjacentPath)) return adjacentPath;
     const QString packagedPath = QDir::cleanPath(appDir.absoluteFilePath("../frpc.exe"));
     if (QFileInfo::exists(packagedPath)) {
         return packagedPath;
     }
-    return appDir.filePath("frpc.exe");
+    return adjacentPath;
 }
 
 QString ProfileService::legacyProfilePath() const
