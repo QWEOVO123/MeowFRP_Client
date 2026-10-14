@@ -30,6 +30,7 @@ add_executable(frp-control-client ${FRP_CLIENT_APP_TYPE}
     app/src/control_api_client.h
     app/src/control_api_client.cpp
     app/src/tunnel_runtime_service.h
+    app/src/tunnel_startup_progress.h
     app/src/tunnel_runtime_service.cpp
     app/src/app_controller.h
     app/src/app_controller.cpp

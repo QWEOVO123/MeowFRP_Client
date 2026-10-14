@@ -186,6 +186,63 @@ ApplicationWindow {
         exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: root.hc ? 0 : 100 } }
     }
 
+    component TunnelStartup: Surface {
+        id: startup
+        objectName: "tunnelStartupProgress"
+        implicitHeight: 144
+        readonly property bool failed: appController.tunnelStartFailed
+        readonly property int step: appController.tunnelStartStep
+        Accessible.role: Accessible.ProgressBar
+        Accessible.name: "隧道启动进度"
+        Accessible.description: appController.tunnelStartMessage
+        ColumnLayout {
+            anchors.fill: parent; anchors.margins: 16; spacing: 10
+            RowLayout {
+                Layout.fillWidth: true
+                LabelText { text: startup.failed ? "启动遇到问题" : startup.step === 5 ? "启动完成" : "正在启动隧道"; font.weight: Font.DemiBold; color: startup.failed ? root.danger : root.ink }
+                Item { Layout.fillWidth: true }
+                LabelText { text: startup.failed ? "查看日志" : startup.step === 5 ? "4 / 4" : Math.max(1, startup.step) + " / 4"; color: startup.failed ? root.danger : root.muted; font.pixelSize: 11 }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 8
+                Repeater {
+                    model: ["鉴权配置", appController.tunnelStartTLSDisabled ? "TLS 已关闭" : "TLS 信任根", "FRP 登录", "建立隧道"]
+                    delegate: RowLayout {
+                        id: stage
+                        required property string modelData
+                        required property int index
+                        Layout.fillWidth: true; spacing: 8
+                        readonly property bool done: startup.step > index + 1
+                        readonly property bool active: startup.step === index + 1
+                        Rectangle {
+                            Layout.preferredWidth: 26; Layout.preferredHeight: 26; radius: 13
+                            color: stage.active && startup.failed ? root.dangerSoft : stage.done ? root.successSoft : stage.active ? root.primarySoft : root.fieldColor
+                            border.color: stage.active && startup.failed ? root.danger : stage.done ? root.success : stage.active ? root.primary : root.line
+                            LabelText { anchors.centerIn: parent; text: stage.done ? "\uE73E" : (stage.index + 1).toString(); font.family: stage.done ? "Segoe MDL2 Assets" : root.font.family; color: stage.active && startup.failed ? root.danger : stage.done ? root.success : stage.active ? root.primary : root.muted; font.pixelSize: 12 }
+                            Behavior on color { ColorAnimation { duration: root.hc ? 0 : 150 } }
+                        }
+                        LabelText { text: stage.modelData; Layout.fillWidth: true; color: stage.active && startup.failed ? root.danger : stage.done ? root.success : stage.active ? root.primary : root.muted; font.pixelSize: 11 }
+                    }
+                }
+            }
+            Rectangle {
+                id: progressTrack
+                Layout.fillWidth: true; implicitHeight: 4; radius: 2; color: root.line; clip: true
+                Rectangle {
+                    height: parent.height; radius: 2
+                    width: parent.width * Math.max(0, Math.min(1, (startup.step - 1) / 4))
+                    color: startup.failed ? root.danger : startup.step === 5 ? root.success : root.primaryFill
+                    Behavior on width { NumberAnimation { duration: root.hc ? 0 : 180; easing.type: Easing.OutCubic } }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 8
+                BusyIndicator { running: startup.visible && startup.step > 0 && startup.step < 5 && !startup.failed; visible: running; Layout.preferredWidth: 18; Layout.preferredHeight: 18 }
+                LabelText { objectName: "tunnelStartupMessage"; Layout.fillWidth: true; text: appController.tunnelStartMessage; font.pixelSize: 11; color: startup.failed ? root.danger : root.muted; maximumLineCount: 2; elide: Text.ElideRight }
+            }
+        }
+    }
+
     Loader { anchors.fill: parent; sourceComponent: appController.connected ? dashboardPage : connectPage }
     ThemedDialog {
         id: remoteWarningDialog
@@ -235,35 +292,21 @@ ApplicationWindow {
         Item {
             RowLayout {
                 anchors.fill: parent; anchors.margins: 40; spacing: 42
-                ColumnLayout {
-                    Layout.fillWidth: true; Layout.fillHeight: true; spacing: 16
-                    RowLayout {
-                        spacing: 12
-                        Image { Layout.preferredWidth: 42; Layout.preferredHeight: 42; source: "qrc:/assets/app_icon_256.png"; fillMode: Image.PreserveAspectFit }
-                        LabelText { text: "MeowFRP"; font.pixelSize: 22; font.weight: Font.Bold }
-                    }
-                    Item { Layout.fillHeight: true }
-                    Pill { text: "YOUR PRIVATE GATEWAY"; fg: root.primary }
-                    LabelText { text: "连接，不设限。"; font.pixelSize: 35; font.weight: Font.Bold; Layout.fillWidth: true }
-                    LabelText { text: "把本地服务，\n带到你需要的地方。"; font.pixelSize: 22; color: root.muted; lineHeight: 1.35; Layout.fillWidth: true }
-                    Item { Layout.preferredHeight: 16 }
-                    RowLayout { AppIcon { glyph: "\uE72E" } LabelText { text: "先鉴权，再选择授权节点"; color: root.muted } }
-                    RowLayout { AppIcon { glyph: "\uE968" } LabelText { text: "集中管理，多节点接入"; color: root.muted } }
-                    RowLayout { AppIcon { glyph: "\uE713" } LabelText { text: "跟随系统主题 · 自适应窗口材质"; color: root.muted } }
-                    Item { Layout.fillHeight: true }
-                    LabelText { text: "MEOWFRP CLIENT / 0.1"; color: root.muted; font.pixelSize: 11; font.letterSpacing: 1.5 }
-                }
+                Item { Layout.fillWidth: true }
                 Surface {
-                    Layout.preferredWidth: 460; Layout.fillHeight: true; radius: 22
+                    objectName: "loginCard"
+                    Layout.preferredWidth: 560; Layout.fillHeight: true; radius: 22
                     ScrollView {
+                        objectName: "loginScroll"
                         anchors.fill: parent; anchors.margins: 30; clip: true; contentWidth: availableWidth
                         ColumnLayout {
                             width: parent.width; spacing: 12
                             RowLayout {
-                                LabelText { text: "欢迎回来"; font.pixelSize: 27; font.weight: Font.Bold; Layout.fillWidth: true }
+                                Image { Layout.preferredWidth: 30; Layout.preferredHeight: 30; source: "qrc:/assets/app_icon_256.png"; fillMode: Image.PreserveAspectFit }
+                                LabelText { text: "MeowFRP"; font.pixelSize: 23; font.weight: Font.Bold; Layout.fillWidth: true }
                                 AppCombo { Layout.preferredWidth: 116; implicitHeight: 36; model: ["跟随系统", "浅色", "深色"]; currentIndex: appearance.themeMode === "light" ? 1 : appearance.themeMode === "dark" ? 2 : 0; onActivated: appearance.themeMode = ["system", "light", "dark"][currentIndex]; Accessible.name: "外观主题" }
                             }
-                            LabelText { text: "使用系统生成的 Token 安全登录。"; color: root.muted; Layout.fillWidth: true }
+                            LabelText { text: "登录"; color: root.muted; Layout.fillWidth: true }
                             Item { Layout.preferredHeight: 8 }
                             LabelText { text: "中心节点 API 地址"; font.weight: Font.DemiBold }
                             AppField { id: apiInput; Layout.fillWidth: true; text: appController.apiBaseUrl; placeholderText: "https://center.example.com/api"; enabled: !appController.busy; onTextEdited: appController.apiBaseUrl = text; onEditingFinished: appController.apiBaseUrl = text; Accessible.name: "中心节点 API 地址" }
@@ -299,6 +342,7 @@ ApplicationWindow {
                         }
                     }
                 }
+                Item { Layout.fillWidth: true }
             }
         }
     }
@@ -349,6 +393,7 @@ ApplicationWindow {
             clip: true; contentWidth: availableWidth
             ColumnLayout {
                 width: tunnelScroll.availableWidth; spacing: 16
+                TunnelStartup { Layout.fillWidth: true; visible: appController.tunnelStartStep > 0 }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 12
                     StatCard { Layout.fillWidth: true; label: "当前节点 FRP 地址"; value: appController.frpEndpoint }

@@ -121,19 +121,33 @@ void ControlApiClient::queryNodeDirectory(const QString &controllerApiBaseUrl, c
     });
 }
 
-void ControlApiClient::queryResourcePolicy(const QString &apiBaseUrl, const QString &accessToken, const QString &clientId)
+void ControlApiClient::queryResourcePolicy(const QString &apiBaseUrl, const QString &accessToken, const QString &clientId, const QString &expectedNodeId)
 {
+    const QUrl statusUrl = endpointUrl(apiBaseUrl, "/v1/client/frp-transport");
+    if (statusUrl.scheme() != "https" || !statusUrl.userInfo().isEmpty() || !statusUrl.fragment().isEmpty()) {
+        emit requestFailed("节点 API 必须使用正规 HTTPS，以安全查询 FRP TLS 状态。请在节点设置中修改公开 API URL。");
+        return;
+    }
     QJsonObject payload{
         {"access_token", accessToken.trimmed()},
         {"client_id", clientId.trimmed()},
     };
-    postJson(endpointUrl(apiBaseUrl, "/v1/client/resource-policy"), payload, [this](const QJsonObject &object) {
-        const ResourcePolicyResponse response = ResourcePolicyResponse::fromJson(object);
-        if (!response.ok) {
-            emit requestFailed(response.reason.isEmpty() ? "服务端拒绝了权限查询。" : response.reason);
+    getJson(statusUrl, [this, apiBaseUrl, payload, expectedNodeId](const QJsonObject &status) {
+        if (!status.value("ok").toBool() || !status.value("enabled").isBool() || expectedNodeId.isEmpty() || status.value("node_id").toString() != expectedNodeId) {
+            emit requestFailed("无法确认节点的 FRP TLS 状态或节点身份，请升级服务端并检查节点 API 地址。");
             return;
         }
-        emit resourcePolicyLoaded(response);
+        const bool tlsEnabled = status.value("enabled").toBool();
+        debugLog(QString("[TLS] HTTPS confirmed node transport: enabled=%1").arg(tlsEnabled));
+        postJson(endpointUrl(apiBaseUrl, "/v1/client/resource-policy"), payload, [this, tlsEnabled](const QJsonObject &object) {
+            ResourcePolicyResponse response = ResourcePolicyResponse::fromJson(object);
+            if (!response.ok) {
+                emit requestFailed(response.reason.isEmpty() ? "服务端拒绝了权限查询。" : response.reason);
+                return;
+            }
+            response.frpTransportTls = tlsEnabled;
+            emit resourcePolicyLoaded(response);
+        });
     });
 }
 
@@ -294,6 +308,7 @@ void ControlApiClient::postJson(const QUrl &url, const QJsonObject &payload, std
 
 void ControlApiClient::getJson(const QUrl &url, std::function<void(const QJsonObject &)> onSuccess)
 {
+    const auto generation = m_sessionGeneration;
     const auto requestId = ++m_requestSequence;
     debugLog(QString("[HTTP #%1] GET %2 timeout_ms=15000").arg(requestId).arg(LogSafety::url(url)));
     const QString validationError = endpointValidationError(url);
@@ -302,12 +317,16 @@ void ControlApiClient::getJson(const QUrl &url, std::function<void(const QJsonOb
         return;
     }
     QNetworkRequest request(url);
+    request.setRawHeader("Cache-Control", "no-cache, no-store");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
     request.setTransferTimeout(15000);
 #endif
     auto *reply = m_network.get(request);
     reply->setProperty("diagnosticRequestId", QVariant::fromValue(requestId));
-    handleJsonReply(reply, onSuccess, [this](const QString &message) { emit requestFailed(message); });
+    handleJsonReply(reply, [this, generation, onSuccess](const QJsonObject &object) {
+        if (generation == m_sessionGeneration) onSuccess(object);
+    }, [this, generation](const QString &message) { if (generation == m_sessionGeneration) emit requestFailed(message); });
 }
 
 void ControlApiClient::handleJsonReply(QNetworkReply *reply, std::function<void(const QJsonObject &)> onSuccess, std::function<void(const QString &)> onFailure)

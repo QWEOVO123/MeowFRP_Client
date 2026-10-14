@@ -11,6 +11,8 @@ public:
         insert("previewMode", true); insert("previewPage", page);
         insert("connected", page != "login" && page != "nodes"); insert("busy", false);
         insert("frpcRunning", true); insert("quitInProgress", false); insert("allowClose", true);
+        insert("tunnelStartStep", 0); insert("tunnelStartMessage", "");
+        insert("tunnelStartFailed", false); insert("tunnelStartTLSDisabled", false);
         insert("apiBaseUrl", "https://center.example.com/api"); insert("clientId", "DEMO-DEVICE-7A91");
         insert("frpcPath", "frpc.exe"); insert("runtimeDir", "runtime"); insert("userName", "demo_alice");
         insert("tokenName", "个人访问令牌"); insert("frpEndpoint", "203.0.113.10:7000");
@@ -31,7 +33,10 @@ public:
     Q_INVOKABLE void selectNode(int) { insert("connected",true); emit stateChanged(); }
     Q_INVOKABLE void saveProfile() { insert("statusMessage","演示模式：不保存实际配置"); }
     Q_INVOKABLE void addTunnel(const QString &,const QString &,const QString &,int,int) { insert("statusMessage","演示模式：不创建实际隧道"); }
-    Q_INVOKABLE void startTunnels() { insert("statusMessage","演示模式：不启动 frpc"); }
+    Q_INVOKABLE void startTunnels() {
+        insert("tunnelStartStep", 2); insert("tunnelStartMessage", "正在通过 HTTPS 下载 TLS 信任根…（界面演示）");
+        insert("tunnelStartFailed", false);
+    }
     Q_INVOKABLE void stopTunnel(int) { insert("statusMessage","演示模式：不操作 frpc"); }
     Q_INVOKABLE void removeTunnel(int) { insert("statusMessage","演示模式：不修改隧道"); }
     Q_INVOKABLE void stopAllTunnels() { insert("statusMessage","演示模式：不操作 frpc"); }

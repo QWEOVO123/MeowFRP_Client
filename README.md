@@ -24,6 +24,10 @@ You need an initialized MeowFRP controller, an administrator-generated regular-u
 
 Keep the complete portable client directory: executable, Qt DLLs, QML/plugins and matching `frpc.exe`. Copying only the executable may prevent startup.
 
+FRP TLS is enabled by default on new servers. Login queries the selected node's HTTPS `/api/v1/client/frp-transport` endpoint before loading permissions. The bundled modified FRPC fetches a fresh node-specific CA over system-verified HTTPS before each physical connection, and trusts that root exclusively in memory. No FRP CA is written to disk or installed into Windows. An explicit server-side TLS disable is supported; failed trust downloads never trigger plaintext fallback. Upgrade server, client and bundled FRPC together, and configure a valid public HTTPS API for every node. Managed trust supports TCP transport, including TCP/UDP proxies; it does not currently support QUIC/WebSocket transport. The node's Web settings can reset its FRP CA/key; certificates also renew automatically.
+
+Starting tunnels displays four event-driven stages: authenticated configuration request → TLS trust download → FRP login → proxy registration. A process-start notification is not connection success; progress completes only after all configured proxies report `start proxy success`. TLS-disabled nodes are labeled explicitly. Connection/certificate/proxy failures remain visible, reconnect starts a fresh attempt, and ordinary visitor work connections do not reset completed startup progress. Login itself still downloads no FRP trust certificate. The login screen is a centered form without the previous promotional sidebar.
+
 Use FRPC built from the matching server's adapted source. The current FRP version identifier is 0.69.1; arbitrary older binaries are not guaranteed drop-in replacements.
 
 ## Sign in and create a tunnel

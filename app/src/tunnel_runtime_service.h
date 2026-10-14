@@ -2,6 +2,7 @@
 
 #include "models.h"
 #include "profile_service.h"
+#include "tunnel_startup_progress.h"
 
 #include <QObject>
 #include <QProcess>
@@ -26,6 +27,7 @@ signals:
     void statusChanged(const QString &status);
     void logLine(const QString &line);
     void failed(const QString &message);
+    void startupProgress(int step, const QString &message, bool failed, bool tlsDisabled);
     void leaseEnded(const QString &apiUrl, const QString &token, const QString &clientId, const QString &leaseId);
 
 private:
@@ -34,6 +36,8 @@ private:
     void requestStop(bool restartAfterStop, const QString &source);
     void releaseActiveLease();
     void readLogLines(QByteArray &buffer, const QByteArray &data, bool flush = false);
+    void reportStartupLine(const QString &line);
+    TunnelStartupProgress m_startup;
 
     QProcess m_process;
     QTimer m_forceKillTimer;

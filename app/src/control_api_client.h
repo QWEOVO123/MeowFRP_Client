@@ -20,7 +20,7 @@ public:
     void setDebugMode(bool enabled) { m_debugMode = enabled; }
 
     void queryNodeDirectory(const QString &controllerApiBaseUrl, const QString &accessToken, const QString &clientId);
-    void queryResourcePolicy(const QString &apiBaseUrl, const QString &accessToken, const QString &clientId);
+    void queryResourcePolicy(const QString &apiBaseUrl, const QString &accessToken, const QString &clientId, const QString &expectedNodeId);
     void bootstrap(const QString &apiBaseUrl, const QString &accessToken, const QString &clientId, const QList<TunnelDraft> &proxies);
     void heartbeat(const QString &apiBaseUrl, const QString &accessToken, const QString &clientId, bool frpcRunning);
     void releaseLease(const QString &apiBaseUrl, const QString &accessToken, const QString &clientId, const QString &leaseId);

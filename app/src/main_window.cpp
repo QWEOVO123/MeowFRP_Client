@@ -362,7 +362,7 @@ void MainWindow::queryPolicy()
     }
     statusBar()->showMessage("正在连接服务器...");
     appendLog("正在连接服务器并获取权限...");
-    m_api.queryResourcePolicy(m_profile.apiBaseUrl, m_profile.accessToken, m_profile.clientId);
+    m_api.queryResourcePolicy(m_profile.apiBaseUrl, m_profile.accessToken, m_profile.clientId, m_profile.selectedNodeId);
 }
 
 void MainWindow::requestBootstrap()

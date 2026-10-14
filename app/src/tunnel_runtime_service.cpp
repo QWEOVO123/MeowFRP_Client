@@ -7,6 +7,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QTimer>
+#include <QUrl>
 
 TunnelRuntimeService::TunnelRuntimeService(QObject *parent)
     : QObject(parent)
@@ -54,6 +55,8 @@ TunnelRuntimeService::TunnelRuntimeService(QObject *parent)
             emit statusChanged("frpc 已停止。");
             return;
         }
+        m_startup.failed = true;
+        emit startupProgress(m_startup.step > 4 ? 3 : m_startup.step, "FRPC 已退出，隧道未保持连接；详情见日志", true, m_startup.tlsDisabled);
         emit statusChanged(QString("frpc 已停止，退出码=%1，状态=%2").arg(exitCode).arg(exitStatus == QProcess::NormalExit && exitCode == 0 ? "正常结束" : "运行失败，非手动退出；请查看前面的连接错误"));
     });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
@@ -110,12 +113,36 @@ void TunnelRuntimeService::startNow(const ClientProfile &profile, const Bootstra
     m_stopSource.clear();
     m_activeProfile = profile;
     m_activeLeaseId = bootstrap.leaseId;
+    const QRegularExpression managedTLS(QStringLiteral(R"((?m)^\s*transport\.tls\.trustFromAPI\s*=\s*true\s*$)"));
+    const bool managedTrust = managedTLS.match(bootstrap.frpcConfig).hasMatch();
+    const QRegularExpression proxySection(QStringLiteral(R"((?m)^\s*\[\[proxies\]\]\s*$)"));
+    auto sections = proxySection.globalMatch(bootstrap.frpcConfig);
+    int proxyCount = 0;
+    while (sections.hasNext()) { sections.next(); ++proxyCount; }
+    m_startup.begin(proxyCount, managedTrust);
+    emit startupProgress(m_startup.step, m_startup.message, false, false);
     if (!QFileInfo::exists(profile.frpcPath)) {
         releaseActiveLease();
         emit failed("找不到 frpc 程序：" + profile.frpcPath);
         return;
     }
 
+    QStringList arguments;
+    if (managedTrust) {
+        QUrl trustUrl(profile.selectedNodeApiUrl.trimmed());
+        if (trustUrl.scheme() != "https" || trustUrl.host().isEmpty() || !trustUrl.userInfo().isEmpty() || trustUrl.hasQuery() || trustUrl.hasFragment() || profile.selectedNodeId.isEmpty()) {
+            releaseActiveLease();
+            emit failed("FRP 信任根只能从所选节点的正规 HTTPS API 获取；不允许 HTTP 或忽略证书校验。");
+            return;
+        }
+        QString path = trustUrl.path();
+        while (path.endsWith('/')) path.chop(1);
+        if (path.isEmpty()) path = "/api";
+        if (path.endsWith("/api/v1")) path.chop(3);
+        trustUrl.setPath(path + "/v1/client/frp-trust");
+        arguments << "--trust-api" << trustUrl.toString();
+        debugLog("[TLS] FRPC will fetch fresh trust into memory for each connection; no CA file is written");
+    }
     QString errorMessage;
     m_configPath = writeConfig(profile, bootstrap, &errorMessage);
     if (m_configPath.isEmpty()) {
@@ -127,9 +154,17 @@ void TunnelRuntimeService::startNow(const ClientProfile &profile, const Bootstra
     emit statusChanged("正在启动 frpc...");
     emit logLine("配置文件：" + m_configPath);
     m_process.setProgram(profile.frpcPath);
-    m_process.setArguments(QStringList{"-c", m_configPath});
+    arguments.prepend(m_configPath);
+    arguments.prepend("-c");
+    m_process.setArguments(arguments);
     debugLog("[PROCESS] launch program=" + profile.frpcPath + " args=-c " + m_configPath);
     m_process.start();
+}
+
+void TunnelRuntimeService::reportStartupLine(const QString &line)
+{
+    if (!m_stoppingIntentionally && m_startup.observe(line))
+        emit startupProgress(m_startup.step, m_startup.message, m_startup.failed, m_startup.tlsDisabled);
 }
 
 void TunnelRuntimeService::readLogLines(QByteArray &buffer, const QByteArray &data, bool flush)
@@ -141,6 +176,7 @@ void TunnelRuntimeService::readLogLines(QByteArray &buffer, const QByteArray &da
         const auto line = QString::fromUtf8(buffer.first(newline)).remove(ansi).trimmed();
         buffer.remove(0,newline+1);
         if (!line.isEmpty()) {
+            reportStartupLine(line);
             emit logLine(m_debugMode ? (QString("[FRPC %1] ").arg(&buffer == &m_stdoutBuffer ? "stdout" : "stderr") + line) : line);
         }
     }
@@ -148,6 +184,7 @@ void TunnelRuntimeService::readLogLines(QByteArray &buffer, const QByteArray &da
         const auto line = QString::fromUtf8(buffer).remove(ansi).trimmed();
         buffer.clear();
         if (!line.isEmpty()) {
+            reportStartupLine(line);
             emit logLine(m_debugMode ? (QString("[FRPC %1] ").arg(&buffer == &m_stdoutBuffer ? "stdout" : "stderr") + line) : line);
         }
     }
@@ -169,6 +206,8 @@ void TunnelRuntimeService::stop(const QString &source)
 
 void TunnelRuntimeService::requestStop(bool restartAfterStop, const QString &source)
 {
+    m_startup.stop();
+    emit startupProgress(restartAfterStop ? 1 : 0, restartAfterStop ? "正在关闭旧隧道并应用新配置…" : QString(), false, false);
     m_stopSource = source;
     debugLog(QString("[PROCESS] stop request source=%1 restart=%2 running=%3 pid=%4 pending_start=%5")
         .arg(source).arg(restartAfterStop).arg(isRunning()).arg(m_process.processId()).arg(m_hasPendingStart));

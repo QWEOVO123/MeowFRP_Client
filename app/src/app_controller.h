@@ -20,6 +20,10 @@ class AppController : public QObject {
     Q_PROPERTY(bool connected READ connected NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool frpcRunning READ frpcRunning NOTIFY stateChanged)
+    Q_PROPERTY(int tunnelStartStep READ tunnelStartStep NOTIFY tunnelStartProgressChanged)
+    Q_PROPERTY(QString tunnelStartMessage READ tunnelStartMessage NOTIFY tunnelStartProgressChanged)
+    Q_PROPERTY(bool tunnelStartFailed READ tunnelStartFailed NOTIFY tunnelStartProgressChanged)
+    Q_PROPERTY(bool tunnelStartTLSDisabled READ tunnelStartTLSDisabled NOTIFY tunnelStartProgressChanged)
     Q_PROPERTY(bool quitInProgress READ quitInProgress NOTIFY stateChanged)
     Q_PROPERTY(bool allowClose READ allowClose NOTIFY stateChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY stateChanged)
@@ -61,6 +65,10 @@ public:
     bool connected() const;
     bool busy() const;
     bool frpcRunning() const;
+    int tunnelStartStep() const { return m_tunnelStartStep; }
+    QString tunnelStartMessage() const { return m_tunnelStartMessage; }
+    bool tunnelStartFailed() const { return m_tunnelStartFailed; }
+    bool tunnelStartTLSDisabled() const { return m_tunnelStartTLSDisabled; }
     bool quitInProgress() const;
     bool allowClose() const;
     QString statusMessage() const;
@@ -106,6 +114,7 @@ signals:
     void profileChanged();
     void debugModeChanged();
     void stateChanged();
+    void tunnelStartProgressChanged();
     void policyChanged();
     void logsChanged();
     void tunnelsChanged();
@@ -123,6 +132,7 @@ private:
     void setBusy(bool value, const QString &message = {});
     void setError(const QString &message);
     void setStatus(const QString &message);
+    void setTunnelStartProgress(int step, const QString &message, bool failed = false, bool tlsDisabled = false);
     void appendLog(const QString &line);
     void debugLog(const QString &line);
     void traceAction(const QString &source);
@@ -151,6 +161,10 @@ private:
     bool m_connected = false;
     bool m_busy = false;
     bool m_frpcRunning = false;
+    int m_tunnelStartStep = 0;
+    QString m_tunnelStartMessage;
+    bool m_tunnelStartFailed = false;
+    bool m_tunnelStartTLSDisabled = false;
     bool m_quitInProgress = false;
     bool m_allowClose = false;
     LogoutAction m_logoutAction = LogoutAction::None;

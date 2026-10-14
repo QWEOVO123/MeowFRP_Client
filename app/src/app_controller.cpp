@@ -27,6 +27,7 @@ AppController::AppController(QObject *parent)
     m_profile.accessToken.clear();
     connect(&m_api, &ControlApiClient::diagnostic, this, &AppController::debugLog);
     connect(&m_runtime, &TunnelRuntimeService::diagnostic, this, &AppController::debugLog);
+    connect(&m_runtime, &TunnelRuntimeService::startupProgress, this, &AppController::setTunnelStartProgress);
     connect(&m_api, &ControlApiClient::accountAuthenticated, this, [this](const QString &token) {
         m_profile.accessToken = token;
         emit profileChanged();
@@ -56,6 +57,8 @@ AppController::AppController(QObject *parent)
         emit tunnelsChanged();
     });
     connect(&m_api, &ControlApiClient::requestFailed, this, [this](const QString &message) {
+        if (m_connected && m_tunnelStartStep == 1)
+            setTunnelStartProgress(1, "隧道配置请求失败：" + message, true);
         setBusy(false);
         setError(message);
         if (message.contains("中心节点失联") || message.contains("controller_disconnected")) {
@@ -87,6 +90,7 @@ AppController::AppController(QObject *parent)
         appendLog("旧租约释放请求失败（下次启动会替换同一客户端旧租约）：" + message);
     });
     connect(&m_runtime, &TunnelRuntimeService::failed, this, [this](const QString &message) {
+        setTunnelStartProgress(qMax(1, m_tunnelStartStep), "启动失败：" + message, true, m_tunnelStartTLSDisabled);
         m_frpcRunning = m_runtime.isRunning();
         setError(message);
         emit tunnelsChanged();
@@ -375,7 +379,7 @@ void AppController::selectNode(int index)
     saveProfile();
     setBusy(true, "正在连接边缘节点并获取权限");
     appendLog(QString("已选择节点 %1（%2），正在直接鉴权...").arg(node.tag, node.apiUrl));
-    m_api.queryResourcePolicy(node.apiUrl, m_profile.accessToken, m_profile.clientId);
+    m_api.queryResourcePolicy(node.apiUrl, m_profile.accessToken, m_profile.clientId, node.nodeId);
 }
 
 void AppController::createTunnel(const QString &name, const QString &type, const QString &localIp, int localPort, int remotePort)
@@ -568,6 +572,15 @@ void AppController::setStatus(const QString &message)
     emit stateChanged();
 }
 
+void AppController::setTunnelStartProgress(int step, const QString &message, bool failed, bool tlsDisabled)
+{
+    m_tunnelStartStep = step;
+    m_tunnelStartMessage = message;
+    m_tunnelStartFailed = failed;
+    m_tunnelStartTLSDisabled = tlsDisabled;
+    emit tunnelStartProgressChanged();
+}
+
 void AppController::appendLog(const QString &line)
 {
     const QString trimmed = LogSafety::redact(line.trimmed());
@@ -706,6 +719,7 @@ void AppController::requestBootstrapForTunnels(const QList<TunnelDraft> &tunnels
     }
 
     setBusy(true, statusMessage);
+    setTunnelStartProgress(1, "正在向节点鉴权并请求隧道配置…");
     appendLog(QString("正在请求服务端下发 %1 个隧道配置...").arg(tunnels.size()));
     m_api.bootstrap(m_profile.selectedNodeApiUrl, m_profile.accessToken, m_profile.clientId, tunnels);
 }

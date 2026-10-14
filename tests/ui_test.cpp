@@ -1,5 +1,6 @@
 #include "appearance_controller.h"
 #include "ui_preview_controller.h"
+#include "tunnel_startup_progress.h"
 #include <QtTest>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -104,6 +105,118 @@ private slots:
         isolated.setThemeMode("dark"); isolated.setGlassEnabled(false); isolated.setThemeMode("system");
         QCOMPARE(settings.value("appearance/theme"), beforeMode);
         QCOMPARE(settings.value("appearance/glass"), beforeGlass);
+    }
+
+    void tunnelStartupUsesRealEventsAndCountsDistinctProxies() {
+        TunnelStartupProgress progress;
+        progress.begin(2, true);
+        QCOMPARE(progress.step, 2);
+        QVERIFY(!progress.observe("frpc 进程已启动"));
+        QCOMPARE(progress.step, 2);
+        QVERIFY(progress.observe("[I] [MEOW_TLS] trust-fetch complete enabled=true"));
+        QCOMPARE(progress.step, 3);
+        QVERIFY(progress.observe("[I] login to server success, get run id [test]"));
+        QCOMPARE(progress.step, 4);
+        QVERIFY(!progress.observe("[I] [MEOW_TLS] trust-fetch begin"));
+        QCOMPARE(progress.step, 4);
+        QVERIFY(progress.observe("[I] [test] [lease.ssh] start proxy success"));
+        QCOMPARE(progress.step, 4);
+        QVERIFY(progress.observe("[I] [test] [lease.ssh] start proxy success"));
+        QCOMPARE(progress.step, 4); // A repeated log is not a second tunnel.
+        QVERIFY(progress.observe("[I] [test] [lease.game] start proxy success"));
+        QCOMPARE(progress.step, 5);
+        QVERIFY(!progress.failed);
+        QVERIFY(!progress.observe("[I] [MEOW_TLS] trust-fetch begin"));
+        QCOMPARE(progress.step, 5); // Ordinary work connections do not reset startup.
+        QVERIFY(progress.observe("[I] try to connect to server..."));
+        QCOMPARE(progress.step, 2);
+        QVERIFY(progress.observe("[W] [MEOW_TLS] trust-fetch failed"));
+        QVERIFY(progress.failed);
+        QCOMPARE(progress.step, 2);
+        QVERIFY(progress.observe("[W] connect to server error: certificate rejected"));
+        QCOMPARE(progress.step, 2);
+        QVERIFY(progress.observe("[I] try to connect to server..."));
+        QVERIFY(!progress.failed);
+        QVERIFY(progress.observe("[I] [MEOW_TLS] trust-fetch complete enabled=false"));
+        QCOMPARE(progress.step, 3);
+        QVERIFY(progress.tlsDisabled);
+        progress.stop();
+        QVERIFY(!progress.observe("[I] [test] [lease.game] start proxy success"));
+        QCOMPARE(progress.step, 0);
+    }
+
+    void startupErrorsNeverBecomeSuccessfulFromProcessOrLocalServiceLogs() {
+        TunnelStartupProgress progress;
+        progress.begin(1, true);
+        progress.observe("[I] [MEOW_TLS] trust-fetch complete enabled=true");
+        QVERIFY(progress.observe("[W] connect to server error: EOF"));
+        QVERIFY(progress.failed);
+        QCOMPARE(progress.step, 3);
+        QVERIFY(!progress.observe("[E] connect to local service [127.0.0.1:25565] error: refused"));
+        QVERIFY(progress.failed);
+        progress.observe("[I] try to connect to server...");
+        progress.observe("[I] [MEOW_TLS] trust-fetch complete enabled=true");
+        progress.observe("[I] login to server success, get run id [test]");
+        QVERIFY(progress.observe("[W] [lease.ssh] start proxy error: port occupied"));
+        QCOMPARE(progress.step, 4);
+        QVERIFY(progress.failed);
+        progress.observe("[I] [test] [lease.ssh] start proxy success");
+        QCOMPARE(progress.step, 5);
+        QVERIFY(!progress.failed);
+        QVERIFY(!progress.observe("[E] connect to local service [127.0.0.1:25565] error: refused"));
+        QCOMPARE(progress.step, 5); // Local service failure is not FRP login failure.
+    }
+
+    void centeredLoginAndTunnelProgressAdaptToThemes() {
+        QVERIFY(load("login"));
+        window->resize(880, 640);
+        auto *card = qobject_cast<QQuickItem *>(window->findChild<QObject *>("loginCard"));
+        QVERIFY(card);
+        QTRY_VERIFY(qAbs(card->mapToScene(QPointF(card->width()/2,0)).x() - window->width()/2) < 2);
+        QVERIFY(window->findChild<QObject *>("loginScroll"));
+        QVERIFY(!window->findChild<QObject *>("tunnelStartupProgress"));
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+        cleanup();
+        QVERIFY(load("dashboard"));
+        window->resize(880, 640);
+        demo->startTunnels();
+        auto *progress = window->findChild<QObject *>("tunnelStartupProgress");
+        auto *message = window->findChild<QObject *>("tunnelStartupMessage");
+        QVERIFY(progress && message);
+        QTRY_VERIFY(progress->property("visible").toBool());
+        QCOMPARE(progress->property("step").toInt(), 2);
+        QCOMPARE(message->property("text").toString(), demo->value("tunnelStartMessage").toString());
+        for (const auto &theme : {"light", "dark"}) {
+            appearance->setThemeMode(theme);
+            for (int step=1; step<=5; ++step) {
+                demo->insert("tunnelStartStep",step);
+                QTRY_COMPARE(progress->property("step").toInt(), step);
+            }
+            demo->insert("tunnelStartFailed",true);
+            QTRY_VERIFY(progress->property("failed").toBool());
+            demo->insert("tunnelStartTLSDisabled",true);
+            QTest::qWait(20);
+            QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+        }
+    }
+
+    void captureUpdatedUiWhenRequested() {
+        const QString output = qEnvironmentVariable("MEOWFRP_UI_CAPTURE_DIR");
+        if (output.isEmpty()) QSKIP("Optional local UI captures disabled");
+        QVERIFY(QDir().mkpath(output));
+        for (const auto &page : {"login", "dashboard"}) {
+            QVERIFY(load(page));
+            if (QString(page) == "dashboard") demo->startTunnels();
+            for (const auto &theme : {"light", "dark"}) {
+                appearance->setThemeMode(theme);
+                QTest::qWait(200);
+                const QImage screenshot = window->grabWindow();
+                QVERIFY(!screenshot.isNull());
+                QVERIFY(screenshot.save(QDir(output).filePath(QString("%1-%2.png").arg(page,theme))));
+            }
+            QVERIFY2(warnings.isEmpty(),qPrintable(warnings.join('\n')));
+            cleanup();
+        }
     }
 };
 
