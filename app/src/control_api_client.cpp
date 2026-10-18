@@ -138,6 +138,10 @@ void ControlApiClient::queryResourcePolicy(const QString &apiBaseUrl, const QStr
             return;
         }
         const bool tlsEnabled = status.value("enabled").toBool();
+        if (!tlsEnabled) {
+            emit requestFailed("当前客户端仅支持 TCP+TLS。请先升级所选节点并启用 FRP TLS。");
+            return;
+        }
         debugLog(QString("[TLS] HTTPS confirmed node transport: enabled=%1").arg(tlsEnabled));
         postJson(endpointUrl(apiBaseUrl, "/v1/client/resource-policy"), payload, [this, tlsEnabled](const QJsonObject &object) {
             ResourcePolicyResponse response = ResourcePolicyResponse::fromJson(object);
