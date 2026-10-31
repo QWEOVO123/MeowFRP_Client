@@ -1,171 +1,206 @@
 # MeowFRP Client
 
-[中文说明](./README_CN.md) · [Companion server](https://github.com/QWEOVO123/MeowFRP_Server)
+[简体中文](./README_CN.md) | [Server repository](https://github.com/QWEOVO123/MeowFRP_Server)
 
-This is the Windows desktop client for MeowFRP. Enter your controller URL and user token, choose an authorized node, and specify the local service you want to expose. The server supplies the configuration; the client runs FRPC, shows its logs and handles server commands.
+MeowFRP Client is the Windows desktop component of MeowFRP. It authenticates users with the controller, selects authorized nodes, requests server-generated tunnel configurations, and supervises the adapted FRPC process.
 
-The interface uses Qt Quick/QML over C++ authentication, HTTP session and process-management services. A running process, a successful FRP login and a registered tunnel are separate states; the logs help you tell them apart.
+The interface uses Qt Quick/QML. C++ services handle HTTPS requests, session state, FRPC lifecycle, local preferences, and diagnostic logging.
 
-## Everyday features
+## Requirements and scope
 
-- Blue login cards, authorized-node selection, and a sidebar tunnel/log/settings workspace.
-- Windows system, light and dark themes with immediate switching.
-- Native Mica, dark title bars and rounded corners when supported, with an opaque fallback.
-- Server-enforced nodes, ports, protocols and tunnel limits; TCP/UDP tunnel configuration.
-- Effective DPI policy display, copyable endpoints and FRPC output.
-- HTTPS heartbeats, remote notices/stop/reauthentication commands and execution ACKs.
-- A login-page debug switch for detailed HTTP, session, command and process diagnostics.
+- An initialized MeowFRP controller and a generated user token.
+- Explicit node access and resource permissions assigned by the administrator.
+- A client-reachable HTTPS API for the controller and each selected node.
+- A matching server and adapted FRPC build.
+- Windows 10/11 within the support range of the selected Qt/compiler toolchain.
 
-Mica is a Windows background material, not a promise of arbitrary live Gaussian blur behind every window. System transparency and high-contrast settings are respected.
+Only **TCP + verified TLS 1.3** is supported for FRPC–FRPS transport. Plaintext, KCP, QUIC, and WebSocket transports are not supported by the delivered application. Both TCP and UDP proxy services remain supported over this transport.
 
-## Before you start
+The current adapted FRP version identifier is 0.69.1. An upstream or historical `frpc.exe` is not a supported drop-in replacement: the client relies on the adapted HTTPS trust retrieval and runtime authorization flow.
 
-You need an initialized MeowFRP controller, an administrator-generated regular-user token, and assigned node/resource permissions.
+## Architecture and access flow
 
-Keep the complete portable client directory: executable, Qt DLLs, QML/plugins and matching `frpc.exe`. Copying only the executable may prevent startup.
+~~~text
+Qt client -- HTTPS/user token --> Controller: identity and permitted node directory
+    |
+    +-- HTTPS -----------------> Selected node: policy, bootstrap, heartbeat, ACK
+    +-- QProcess --------------> Adapted FRPC
+                                     |
+                                     +-- TCP + TLS 1.3 --> Selected node FRPS
 
-The application supports only TCP + verified TLS 1.3 transport. Login queries the selected node's HTTPS `/api/v1/client/frp-transport` endpoint before loading permissions, without downloading the FRP root. The bundled modified FRPC fetches a fresh node-specific CA over system-verified HTTPS before each physical connection, and trusts that root exclusively in memory. No FRP CA is written to disk or installed into Windows. A node reporting TLS disabled is rejected, never used in plaintext. Upgrade server, client and bundled FRPC together, and configure a valid public HTTPS API for every node. TCP/UDP proxy services remain supported; KCP, QUIC and WebSocket client transport are not. The node's Web settings can reset its FRP CA/key; certificates also renew automatically.
+Visitor --> Node proxy port --> FRPS --> FRPC --> Local service
+~~~
 
-Starting tunnels displays four event-driven stages: authenticated configuration request → TLS trust download → FRP login → proxy registration. A process-start notification is not connection success; progress completes only after all configured proxies report `start proxy success`. Connection/certificate/proxy failures remain visible, reconnect starts a fresh attempt, and ordinary visitor work connections do not reset completed startup progress. Login itself still downloads no FRP trust certificate. The login screen is a centered form without the previous promotional sidebar.
+1. Submit the user token and device ID to the controller's `POST /api/v1/client/login`.
+2. Select a node from the authorized directory.
+3. Query `GET /api/v1/client/frp-transport`, then request the selected node's effective `resource-policy`.
+4. Define local address/port, remote port, and TCP/UDP proxy type.
+5. Request `POST /api/v1/client/bootstrap` to validate resources and obtain a temporary runtime lease and TOML.
+6. Start FRPC, retrieve node trust, complete TLS and FRP login, and register allocated proxies.
+7. Send client heartbeats and acknowledge remote commands.
 
-For smaller Windows folders, Main.qml imports `QtQuick.Controls.Basic` directly (dark/light colors and Mica remain application-controlled). `scripts/package-windows.ps1` deploys only scanned styles, Chinese/English translations and required runtime plugins, excluding QML debugger and unused generic plugins. It deliberately retains software OpenGL fallback for older GPUs. Example: `./scripts/package-windows.ps1 -OutputDir <new-folder> -FrpcPath <matching-frpc.exe> -FrpLicensePath <FRP-LICENSE> -QtRoot C:\Qt\6.11.1\mingw_64`. Existing output folders are never overwritten.
+The user API token and FRP runtime token have separate scopes. Runtime leases normally last 24 hours; server configuration determines actual validity and resource limits. The web administrator password is not a desktop user credential.
 
-Use FRPC built from the matching server's adapted source. The current FRP version identifier is 0.69.1; arbitrary older binaries are not guaranteed drop-in replacements.
+`QNetworkAccessManager` handles API requests. Request generations prevent obsolete responses from being accepted after logout or node/session changes. Client heartbeats normally run every 10 seconds.
 
-## Sign in and create a tunnel
+## TLS trust and key negotiation
 
-1. Enter the complete controller API URL, such as `https://frp.example.com/api`. No real endpoint is preset; include the supplied `/api` or other base path.
-2. Enter the user token, not the web administrator password.
-3. Select “Sign in and choose node”. Authentication happens at the controller before the authorized directory is returned.
-4. Choose an online node. The client requests that node's effective policy directly.
-5. Add a local address/port, remote port and protocol, then start tunnels.
-6. Confirm `login to server success` and `start proxy success` in FRPC output.
+### Separate trust domains
 
-For `127.0.0.1:25565` mapped to remote port 25565, visitors connect to the node's public address on port 25565. A local service must actually listen on the target, and the node's firewall/security group must allow the remote port.
+| Connection | Trust |
+| --- | --- |
+| Qt client → HTTPS API | Normal HTTPS certificate validation using platform trust |
+| FRPC → HTTPS trust endpoint | Normal HTTPS with system roots; redirects are rejected |
+| FRPC → FRPS | An isolated certificate pool containing only the selected node's downloaded CA |
+| Edge → controller | Server-side management mTLS; independent of desktop FRP trust |
 
-**“FRPC process started” and HTTP heartbeat 200 do not prove tunnel success.** Repeated EOF is a transport/login problem to investigate; a local-service refusal after successful registration points to the local target.
+The ordinary login flow queries transport status but does not download the FRP root. At tunnel startup, Qt passes the selected node's trust API URL to the adapted FRPC using `--trust-api`.
 
-## Technical flow
+Before each physical FRPC connection or reconnection, FRPC fetches `GET /api/v1/client/frp-trust`. It validates the expected node ID, enabled status, certificate metadata, and current self-signed root, then constructs an empty trust pool containing that root only. It validates the FRPS certificate and `server_name` without accepting other system roots for FRP.
 
-```text
-Client ── HTTPS + user token ── Controller: identity and authorized nodes
-   │
-   ├── HTTPS ── Selected node: policy, bootstrap, heartbeat, command ACK
-   └── FRPC ─── Selected node FRPS: registration and traffic
+The FRP root is connection-local memory. It is not persisted in client configuration, runtime TOML, temporary certificate files, or the Windows trust store. The client does not configure an FRP TLS session cache; the server disables tickets. TCP multiplexing can reuse an existing TLS connection without a new physical handshake.
 
-Visitor → node tunnel port → FRP work connection → local target
-```
+The API supplies a public trust anchor. TLS 1.3 performs identity verification and session-key negotiation; private keys and traffic keys are not downloaded from the API. Certificate/API errors and `enabled:false` reject the connection without plaintext fallback. Resetting a node identity can require a new trust fetch and retry.
 
-Controller authentication uses `POST /api/v1/client/login`. Node selection is followed by `resource-policy` and `bootstrap`. The returned TOML contains a temporary runtime token distinct from the long-lived API token. Leases normally last 24 hours; actual limits and validity are server-controlled.
+TLS encrypts the FRPC–FRPS segment. Visitor-to-node and client-to-local-service encryption depend on the application protocol.
 
-Client heartbeats normally run every ten seconds. `QNetworkAccessManager` handles HTTPS and `QProcess` owns FRPC. Request generations prevent stale responses from becoming results for a new session.
+### Startup progress
 
-Device IDs are prefixed SHA-256 digests derived from Windows MachineGuid or fallback machine identifiers. The raw MachineGuid is not sent as the device ID; this is device identification, not tamper-proof hardware authentication.
+The tunnel-start interface derives progress from API results and FRPC events:
 
-### Faults and stopping
+| Stage | Completion signal |
+| --- | --- |
+| Configuration authorization | Successful bootstrap response |
+| TLS trust retrieval | Adapted FRPC trust-fetch event |
+| FRP login | `login to server success` |
+| Proxy registration | All configured proxies report `start proxy success` |
 
-A transient HTTPS failure does not directly stop a running FRPC. Current server fault handling refuses new authentication/proxies, warns clients with existing registered proxies, and can require reauthentication once all proxies close.
+Process startup and HTTP heartbeat 200 do not prove tunnel availability. Errors remain visible at the corresponding stage. Reconnection starts a new attempt; routine work connections do not reset completed startup progress.
 
-This does not preserve tunnels through power loss or transport failure. Logout, explicit administrator actions, invalid leases and FRP failures can still interrupt them.
+## Usage
 
-**Stopping one tunnel currently rebuilds the remaining FRPC configuration.** Other tunnels may briefly reconnect; independent per-proxy stopping has not been implemented. Rebuilding also cannot bypass fault admission gates.
+1. Enter the complete controller API URL, for example `https://frp.example.com/api`.
+2. Enter the generated regular-user token.
+3. Authenticate and choose an authorized online node.
+4. Add a tunnel with local address/port, remote port, and protocol.
+5. Start tunnels and verify FRP login and proxy-registration results.
 
-Process shutdown uses `terminate()` followed by forced termination after roughly three seconds. Stop-source diagnostics distinguish UI actions, configuration replacement, server commands and logout.
+For a tunnel mapping `127.0.0.1:25565` to remote port `25565`, visitors use the selected node's public address and port 25565. A local service must listen on the target address, and the node's firewall/security group must permit the remote port.
+
+Node visibility does not imply resource availability. Server-side node pools, user policy, token grants, active leases, and fault admission gates still apply.
+
+## Runtime and fault behavior
+
+`QProcess` owns FRPC. Shutdown first calls `terminate()` and forces termination after approximately 3 seconds if needed. Diagnostics record stop sources, including UI actions, configuration replacement, server commands, and logout.
+
+A transient API request failure does not directly stop an established FRPC process. On control-plane faults, server admission gates reject new logins/proxies, warn clients with registered proxies, and can require reauthentication once their registered proxy count reaches zero. Commands are deduplicated and acknowledged.
+
+**Stopping a single tunnel currently rebuilds the remaining FRPC configuration.** Other tunnels may briefly reconnect. Independent per-proxy stopping is not implemented, and rebuilding cannot bypass server fault gates.
+
+Process restart, transport failure, explicit logout, invalid leases, bans, and administrator actions can interrupt tunnels. A running process flag does not establish that a proxy is registered or that its local target is reachable.
+
+## Local state and diagnostics
+
+| Data | Handling |
+| --- | --- |
+| User token | Current-process memory; not saved in the current profile format |
+| Preferences | API URL, device ID, paths, node selection, and debug preferences |
+| FRP root | Connection-local memory; fetched again for new physical connections |
+| Runtime TOML | Contains temporary runtime credentials; normally under `%APPDATA%\frp-control\frp-control-client\runtime\` |
+| Debug logs | Normally `%LOCALAPPDATA%\frp-control\frp-control-client\logs\`; the UI displays the active path |
+
+Device IDs use a prefixed SHA-256 digest derived from Windows MachineGuid or fallback identifiers. The raw MachineGuid is not submitted as the device ID. This is device identification, not tamper-proof hardware authentication.
+
+Enable **Debug mode** on the login page before signing in. It enables detailed diagnostics and sets FRPC logging to `debug`.
+
+| Marker | Diagnostic content |
+| --- | --- |
+| `[ACTION]`, `[AUTH]`, `[SESSION]` | Action source, authentication, and session transitions |
+| `[HTTP #id]` | Request endpoint, status, timing, and redacted summaries |
+| `[HEARTBEAT]`, `[COMMAND]` | Heartbeats, command processing, and ACKs |
+| `[PROCESS]`, `[CONFIG]`, `[LEASE]` | PID, config paths, stop source, and lease release |
+| `[FRPC stdout/stderr]`, `[QML]` | FRPC output and interface diagnostics |
+
+HTTP summaries use a field allowlist and redact recognized credentials. Logs may still expose node addresses, paths, tunnel names, and server messages. Runtime TOML must be treated as credential-bearing data.
+
+Debug files rotate at approximately 10 MiB and keep one `.previous` segment; session files are not all automatically removed. The UI retains approximately 10,000 lines / 2 MiB. Clearing the view does not delete disk logs. Current token handling does not securely erase files left by earlier versions.
 
 ## Windows appearance
 
-Windows 10/11 operation depends on the selected Qt/toolchain support. Windows 11 22H2+ attempts Mica when available; older/unsupported environments fall back to opaque backgrounds.
+The client supports system/light/dark themes and observes Qt and Windows theme changes. `AppearanceController` uses DWM attributes for supported title bars, corners, and background material.
 
-`AppearanceController` observes Qt theme changes and Windows setting messages, uses official DWM attributes, and saves theme preferences through `QSettings`. System transparency and high contrast take precedence. The minimum window is 880×640, with scrollable forms/lists, short animations and native window controls.
+Windows 11 22H2+ attempts Mica when supported and permitted by system settings. Other environments use an opaque fallback. System transparency and high-contrast settings take precedence. The minimum window size is 880×640, with scrollable forms and lists.
 
-## Build from source
+## Build and package
 
-Requirements: Qt 6.8+ Core, Gui, Qml, Quick, QuickControls2 and Network; CMake 3.16+; a C++17 compiler. Qt Test enables the optional UI test target. Adjust these example Qt 6.11.1/MinGW paths to your installation.
+Requirements: Qt 6.8+ with Core, Gui, Qml, Quick, QuickControls2, and Network; CMake 3.16+; a C++17 compiler. Qt Test is required for the optional UI test target.
 
-From the repository root in PowerShell:
+Example PowerShell build using Qt 6.11.1/MinGW; adjust paths to the installed kit:
 
-```powershell
+~~~powershell
 $qtRoot = 'C:\Qt\6.11.1\mingw_64'
 $env:Path = 'C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\Ninja;' + $qtRoot + '\bin;' + $env:Path
 & 'C:\Qt\Tools\CMake_64\bin\cmake.exe' -S . -B build-release -G Ninja "-DCMAKE_PREFIX_PATH=$qtRoot" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 & 'C:\Qt\Tools\CMake_64\bin\cmake.exe' --build build-release --parallel 6
-```
+~~~
 
-The source target produces `build-release/frp-control-client.exe`; delivered packages may name it `MeowFRP_Client.exe`.
+The source target produces `build-release/frp-control-client.exe`.
 
-Deploy Qt dependencies:
+Build matching FRPC from `third_party/frp` in the server repository:
 
-```powershell
-& "$qtRoot\bin\windeployqt.exe" --release --qmldir .\qml .\build-release\frp-control-client.exe
-```
-
-Build the matching FRPC from `third_party/frp` in the companion server repository. In a Windows x86-64 shell:
-
-```powershell
+~~~powershell
 $env:CGO_ENABLED = '0'
 $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
 go build -trimpath -tags frpc,noweb -o frpc.exe ./cmd/frpc
-```
+~~~
 
-Place it beside the client executable. Discovery prefers adjacent `frpc.exe`, then the parent directory, falling back to the saved path when bundled files are absent. Check `[PROCESS] launch program=...` if you suspect an older binary is being used.
+From the client repository, package into a new directory:
 
-Optional UI checks:
+~~~powershell
+.\scripts\package-windows.ps1 `
+  -BuildDir .\build-release `
+  -OutputDir C:\packages\MeowFRP-client `
+  -FrpcPath ..\MeowFRP_Server\third_party\frp\frpc.exe `
+  -FrpLicensePath ..\MeowFRP_Server\third_party\frp\LICENSE `
+  -QtRoot C:\Qt\6.11.1\mingw_64
+~~~
 
-```powershell
+The script rejects an existing output directory. It names the distributed executable `MeowFRP_Client.exe`, invokes `windeployqt`, and includes matching FRPC and license notices. Packaging limits unused styles, translations, and tooling while retaining graphics fallback.
+
+Distribute the complete package directory. FRPC discovery prefers the executable directory, then its parent, then the configured path. The `[PROCESS] launch program=...` log identifies the binary actually started.
+
+## Validation and offline preview
+
+~~~powershell
 & 'C:\Qt\Tools\CMake_64\bin\ctest.exe' --test-dir build-release --output-on-failure
-```
-
-These cover theme/page behavior, scrolling, navigation and preview isolation, not end-to-end tunnels to live nodes.
-
-## Debugging and local data
-
-Enable Debug mode on the login page before signing in. The log page offers copying and the active file path. Debug mode sets the generated FRPC log level to `debug`.
-
-| Marker | What it helps diagnose |
-| --- | --- |
-| `[ACTION]`, `[AUTH]`, `[SESSION]` | Action source, authentication and session changes |
-| `[HTTP #id]` | Endpoint, status, timing and redacted summaries |
-| `[HEARTBEAT]`, `[COMMAND]` | Heartbeats, deduplication and command ACKs |
-| `[PROCESS]`, `[CONFIG]`, `[LEASE]` | PID, config path, stop source and lease release |
-| `[FRPC stdout/stderr]`, `[QML]` | Native FRPC output and UI warnings |
-
-HTTP summaries use a field allowlist and known credentials are redacted. Full TOML and application traffic are not printed. Logs can still reveal node addresses, paths, tunnel names and server messages; review before sharing.
-
-- Current profiles save endpoint, device ID, paths, node choice and debug preferences, **not the user token**. The token stays in process memory.
-- Generated `lease_*.toml` contains temporary credentials, normally under `%APPDATA%\frp-control\frp-control-client\runtime\`.
-- Debug files normally use `%LOCALAPPDATA%\frp-control\frp-control-client\logs\`; the displayed path is authoritative.
-- Files rotate around 10 MiB with one `.previous` segment. Files from different sessions are not all automatically deleted.
-- The UI retains roughly 10,000 lines / 2 MiB. Clearing the view does not erase disk logs.
-
-Not saving a token in the current version does not securely erase files created by older versions. Protect the Windows profile and never publish runtime TOML, captures or sensitive logs.
-
-## Preview without a server
-
-```powershell
 .\build-release\frp-control-client.exe --ui-preview dashboard --ui-theme dark
-```
+~~~
 
-Pages: `login`, `nodes`, `dashboard`, `logs`, `settings`. Themes: `system`, `light`, `dark`. The independent `UiPreviewController` uses demo data without real profile/token access, HTTP, FRPC or persisted theme changes.
+Preview pages: `login`, `nodes`, `dashboard`, `logs`, `settings`. Themes: `system`, `light`, `dark`. `UiPreviewController` uses isolated demo data without accessing real profiles/tokens, issuing HTTP requests, starting FRPC, or persisting theme changes.
 
-Preview-only `--ui-screenshot <file>` and `--ui-report <file>` produce QML screenshots and theme/material diagnostics. They validate UI rendering, not tunnel connectivity.
+Preview-only `--ui-screenshot <file>` and `--ui-report <file>` generate screenshots and appearance diagnostics. UI tests and preview do not validate live node authentication, end-to-end tunnels, or production network compatibility.
 
 ## Source map
 
-```text
-app/src/app_controller.*          Authentication, nodes, tunnels and commands
-app/src/control_api_client.*      HTTPS, request generations and diagnostics
-app/src/tunnel_runtime_service.*  FRPC, configurations, stopping and leases
-app/src/profile_service.*        Preferences and device identity
-app/src/appearance_controller.*   Windows theme and DWM material
-app/src/log_safety.h              Sensitive-data redaction
-app/src/ui_preview_controller.h   Isolated, offline UI preview
-qml/Main.qml                     Qt Quick interface
-tests/ui_test.cpp                UI regression tests
-```
+| Path | Responsibility |
+| --- | --- |
+| `app/src/app_controller.*` | Authentication, node/tunnel state, heartbeats, and commands |
+| `app/src/control_api_client.*` | HTTPS API, request generations, and diagnostics |
+| `app/src/tunnel_runtime_service.*` | FRPC process, runtime config, trust arguments, and shutdown |
+| `app/src/tunnel_startup_progress.h` | Event-driven tunnel startup stages |
+| `app/src/profile_service.*` | Preferences and device identity |
+| `app/src/appearance_controller.*` | Windows theme and DWM integration |
+| `app/src/log_safety.h` | Credential redaction |
+| `app/src/ui_preview_controller.h` | Isolated preview model |
+| `qml/Main.qml` | Qt Quick interface |
+| `scripts/package-windows.ps1` | Windows runtime packaging |
+| `tests/ui_test.cpp` | UI regression tests |
 
-Further notes: [debug logging](./docs/DEBUG_LOGGING_CN.md), [modern UI and compatibility](./docs/MODERN_UI_CN.md). Identity synchronization, DPI enforcement and fault admission belong to the server.
+The FRPC trust implementation resides in the server repository at `third_party/frp/pkg/transport/memory_trust.go` and `third_party/frp/client/connector.go`. Node identity synchronization and DPI enforcement are server responsibilities.
+
+Additional documentation: [Debug logging](./docs/DEBUG_LOGGING_CN.md), [UI implementation](./docs/MODERN_UI_CN.md).
 
 ## License
 
-Client: [GNU AGPL v3](./LICENSE). The matching FRPC retains FRP's Apache 2.0 license; Qt and other dependencies have their own terms. Keep the applicable notices with distributed packages.
+Client: [GNU AGPL v3](./LICENSE). The adapted FRPC retains FRP's Apache 2.0 license. Qt and other dependencies retain their respective license requirements. Preserve applicable notices in distributed packages.
